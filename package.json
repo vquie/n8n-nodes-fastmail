@@ -1,0 +1,50 @@
+{
+	"name": "n8n-nodes-fastmail",
+	"version": "1.0.0",
+	"description": "This Fastmail node for n8n is designed to set parameters and execute specific operations for the Fastmail API.",
+	"keywords": [
+		"n8n-community-node-package"
+	],
+	"license": "MIT",
+	"homepage": "",
+	"author": {
+		"name": "Vitali Quiering",
+		"email": "v.quiering@me.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/vquie/n8n-nodes-fastmail.git"
+	},
+	"main": "index.js",
+	"scripts": {
+		"build": "tsc && gulp build:icons",
+		"dev": "tsc --watch",
+		"format": "prettier nodes credentials --write",
+		"lint": "eslint nodes credentials package.json",
+		"lintfix": "eslint nodes credentials package.json --fix",
+		"prepublishOnly": "npm run build && npm run lint -c .eslintrc.prepublish.js nodes credentials package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"credentials": [
+			"dist/credentials/FastmailApi.credentials.js"
+		],
+		"nodes": [
+			"dist/nodes/fastmail/Fastmail.node.js"
+		]
+	},
+	"devDependencies": {
+		"@types/node": "^22.13.11",
+		"@typescript-eslint/parser": "^8.25.0",
+		"eslint": "^8.57.1",
+		"eslint-plugin-n8n-nodes-base": "^1.16.4",
+		"gulp": "^4.0.2",
+		"gulp-cli": "^3.0.0",
+		"n8n-workflow": "^1.82.0",
+		"prettier": "^3.5.3",
+		"typescript": "^5.8.2"
+	}
+}
