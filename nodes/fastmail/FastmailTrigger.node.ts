@@ -141,7 +141,7 @@ function buildEventSourceUrl (
 }
 
 async function getMailboxes (
-  node: ILoadOptionsFunctions,
+  node: ITriggerFunctions | ILoadOptionsFunctions,
   token: string,
   session: SessionResponse,
   accountId: string
@@ -313,6 +313,7 @@ export class FastmailTrigger implements INodeType {
     let forceReconnectTimer: NodeJS.Timeout | undefined
     let reconnectAttempt = 0
     let connecting = false
+    let trashMailboxId: string | null = null
 
     const emitEmailEvent = (event: TriggerEventType, email: EmailRecord, source: 'bootstrap' | 'change'): void => {
       if (!selectedEvents.has(event)) return
@@ -381,7 +382,9 @@ export class FastmailTrigger implements INodeType {
       const previousState = typeof staticData.lastQueryState === 'string' ? staticData.lastQueryState : ''
       const previousEmailState = typeof staticData.lastEmailState === 'string' ? staticData.lastEmailState : ''
       const seenMap = (staticData.seenByMessageId as Record<string, boolean> | undefined) ?? {}
+      const mailboxMap = (staticData.mailboxIdsByMessageId as Record<string, string[]> | undefined) ?? {}
       staticData.seenByMessageId = seenMap
+      staticData.mailboxIdsByMessageId = mailboxMap
       const filter = filterLabelId ? { inMailbox: filterLabelId } : undefined
 
       if (previousState === '') {
@@ -395,6 +398,7 @@ export class FastmailTrigger implements INodeType {
           emitEmails('newEmail', 'bootstrap', emails)
           for (const email of emails) {
             seenMap[email.id] = Boolean(email.keywords?.$seen)
+            mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
           }
           staticData.lastQueryState = bootstrap.queryState ?? ''
         } else {
@@ -426,6 +430,7 @@ export class FastmailTrigger implements INodeType {
         const emails = await getEmailsByIds(session, accountId, addedIds)
         for (const email of emails) {
           seenMap[email.id] = Boolean(email.keywords?.$seen)
+          mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
         }
       }
 
@@ -450,6 +455,7 @@ export class FastmailTrigger implements INodeType {
 
         for (const destroyedId of (emailChanges.destroyed ?? [])) {
           delete seenMap[destroyedId]
+          delete mailboxMap[destroyedId]
           emitDeletedEvent(destroyedId)
         }
 
@@ -467,12 +473,29 @@ export class FastmailTrigger implements INodeType {
 
             emitEmailEvent('newEmail', email, 'change')
             seenMap[email.id] = Boolean(email.keywords?.$seen)
+            mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
           }
 
           for (const updatedId of updatedIds) {
             const email = emailById.get(updatedId)
             if (email == null) continue
-            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) continue
+            const previousMailboxIds = mailboxMap[email.id] ?? []
+            const currentMailboxIds = Object.keys(email.mailboxIds ?? {})
+            const wasInFilterMailbox = filterLabelId !== '' && previousMailboxIds.includes(filterLabelId)
+            const isInFilterMailbox = filterLabelId === '' || email.mailboxIds?.[filterLabelId] === true
+
+            const movedToTrash = trashMailboxId != null &&
+              !previousMailboxIds.includes(trashMailboxId) &&
+              currentMailboxIds.includes(trashMailboxId)
+
+            if (movedToTrash || (filterLabelId !== '' && wasInFilterMailbox && !isInFilterMailbox)) {
+              emitDeletedEvent(email.id)
+              seenMap[email.id] = Boolean(email.keywords?.$seen)
+              mailboxMap[email.id] = currentMailboxIds
+              continue
+            }
+
+            if (!isInFilterMailbox) continue
 
             const currentSeen = Boolean(email.keywords?.$seen)
             const previousSeen = seenMap[email.id]
@@ -483,6 +506,7 @@ export class FastmailTrigger implements INodeType {
             }
 
             seenMap[email.id] = currentSeen
+            mailboxMap[email.id] = currentMailboxIds
           }
         }
       } else {
@@ -578,6 +602,10 @@ export class FastmailTrigger implements INodeType {
       try {
         const session = await getSession(this, token)
         const accountId = getPrimaryMailAccountId(session)
+        if (trashMailboxId == null) {
+          const mailboxes = await getMailboxes(this, token, session, accountId)
+          trashMailboxId = mailboxes.find((mailbox) => mailbox.role === 'trash')?.id ?? null
+        }
 
         await syncChanges(session, accountId)
 
