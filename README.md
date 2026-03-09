@@ -78,6 +78,13 @@ Tested with:
 - [JMAP (RFC 8620)](https://www.rfc-editor.org/rfc/rfc8620)
 - [JMAP Mail (RFC 8621)](https://www.rfc-editor.org/rfc/rfc8621)
 
+## Icon Attribution
+
+- Node icon source: `Fastmail_icon_2019.svg` from Wikimedia Commons.
+- Wikimedia marks this file as `PD-textlogo` (public domain for copyright in many jurisdictions).
+- Fastmail name and logo may still be protected by trademark rights.
+- Users are responsible for confirming trademark and branding permissions for their use case.
+
 ## Local development (Docker)
 
 Use the helper script:

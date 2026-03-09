@@ -297,7 +297,7 @@ export class Fastmail implements INodeType {
     name: 'fastmail',
     group: ['transform'],
     version: 1,
-    icon: 'file:Fastmail.png',
+    icon: 'file:fastmail.svg',
     description: 'Actions for Fastmail messages, labels, drafts and threads',
     defaults: {
       name: 'Fastmail'
