@@ -69,7 +69,7 @@ Use a Fastmail API token with the required scopes for the JMAP methods you call.
 
 Tested with:
 
-- n8n 1.21.1
+- n8n 2.11.0
 
 ## Resources
 
