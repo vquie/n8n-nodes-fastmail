@@ -233,6 +233,41 @@ function getEmailProperties (includeBodyValues: boolean): string[] {
   return base
 }
 
+function buildEmailQueryFilter (
+  filterLabelId: string,
+  readStatus: 'any' | 'read' | 'unread',
+  search: string,
+  forceDraftOnly = false
+): JsonObject | undefined {
+  const conditions: JsonObject[] = []
+
+  if (filterLabelId.trim() !== '') {
+    conditions.push({ inMailbox: filterLabelId })
+  }
+
+  if (forceDraftOnly) {
+    conditions.push({ hasKeyword: '$draft' })
+  }
+
+  if (readStatus === 'read') {
+    conditions.push({ hasKeyword: '$seen' })
+  } else if (readStatus === 'unread') {
+    conditions.push({ notKeyword: '$seen' })
+  }
+
+  if (search.trim() !== '') {
+    conditions.push({ text: search.trim() })
+  }
+
+  if (conditions.length === 0) return undefined
+  if (conditions.length === 1) return conditions[0]
+
+  return {
+    operator: 'AND',
+    conditions
+  }
+}
+
 function hasBodyContent (textBody: string, htmlBody: string): boolean {
   return textBody.trim() !== '' || htmlBody.trim() !== ''
 }
@@ -571,6 +606,37 @@ export class Fastmail implements INodeType {
         }
       },
       {
+        displayName: 'Read Status',
+        name: 'readStatus',
+        type: 'options',
+        default: 'any',
+        options: [
+          { name: 'Any', value: 'any' },
+          { name: 'Read', value: 'read' },
+          { name: 'Unread', value: 'unread' }
+        ],
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['getMany']
+          }
+        }
+      },
+      {
+        displayName: 'Search',
+        name: 'search',
+        type: 'string',
+        default: '',
+        placeholder: 'subject, sender, text',
+        description: 'Simple full-text search',
+        displayOptions: {
+          show: {
+            resource: ['message', 'draft', 'thread'],
+            operation: ['getMany']
+          }
+        }
+      },
+      {
         displayName: 'Include Body Values',
         name: 'includeBodyValues',
         type: 'boolean',
@@ -834,9 +900,11 @@ export class Fastmail implements INodeType {
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
             }
+            const readStatus = this.getNodeParameter('readStatus', i, 'any') as 'any' | 'read' | 'unread'
+            const search = this.getNodeParameter('search', i, '') as string
             const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
 
-            const filter = filterLabelId ? { inMailbox: filterLabelId } : {}
+            const filter = buildEmailQueryFilter(filterLabelId, readStatus, search)
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Email/query', { accountId: mailAccountId, filter, sort: [{ property: 'receivedAt', isAscending: false }], limit }, 'q1']
             ])
@@ -1240,9 +1308,11 @@ export class Fastmail implements INodeType {
           if (operation === 'getMany') {
             const limit = this.getNodeParameter('limit', i, 25)
             const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
+            const search = this.getNodeParameter('search', i, '') as string
 
+            const filter = buildEmailQueryFilter('', 'any', search, true)
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-              ['Email/query', { accountId: mailAccountId, filter: { hasKeyword: '$draft' }, limit }, 'q1']
+              ['Email/query', { accountId: mailAccountId, filter, limit }, 'q1']
             ])
             const ids = methodResult<{ ids?: string[] }>(queryResponse, 'Email/query').ids ?? []
             const drafts = await getEmailsByIds(this, token, session, mailAccountId, ids, includeBodyValues)
@@ -1300,8 +1370,10 @@ export class Fastmail implements INodeType {
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
             }
+            const readStatus = this.getNodeParameter('readStatus', i, 'any') as 'any' | 'read' | 'unread'
+            const search = this.getNodeParameter('search', i, '') as string
             const includeEmailIds = this.getNodeParameter('includeEmailIds', i, false) as boolean
-            const filter = filterLabelId ? { inMailbox: filterLabelId } : {}
+            const filter = buildEmailQueryFilter(filterLabelId, readStatus, search)
 
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Email/query', { accountId: mailAccountId, filter, limit, collapseThreads: true }, 'eq1']

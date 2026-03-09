@@ -425,7 +425,6 @@ export class FastmailTrigger implements INodeType {
       const addedIds = (changes.added ?? []).map((entry) => entry.id).filter(Boolean)
       if (addedIds.length > 0) {
         const emails = await getEmailsByIds(session, accountId, addedIds)
-        emitEmails('newEmail', 'change', emails)
         for (const email of emails) {
           seenMap[email.id] = Boolean(email.keywords?.$seen)
         }
@@ -463,13 +462,26 @@ export class FastmailTrigger implements INodeType {
           }
         }
 
-        const changedIds = [...new Set([...(emailChanges.created ?? []), ...(emailChanges.updated ?? [])])]
+        const createdIds = [...new Set(emailChanges.created ?? [])]
+        const updatedIds = [...new Set(emailChanges.updated ?? [])]
+        const changedIds = [...new Set([...createdIds, ...updatedIds])]
         if (changedIds.length > 0) {
           const emails = await getEmailsByIds(session, accountId, changedIds)
-          for (const email of emails) {
-            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) {
-              continue
-            }
+          const emailById = new Map(emails.map((email) => [email.id, email]))
+
+          for (const createdId of createdIds) {
+            const email = emailById.get(createdId)
+            if (email == null) continue
+            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) continue
+
+            emitEmailEvent('newEmail', email, 'change')
+            seenMap[email.id] = Boolean(email.keywords?.$seen)
+          }
+
+          for (const updatedId of updatedIds) {
+            const email = emailById.get(updatedId)
+            if (email == null) continue
+            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) continue
 
             const currentSeen = Boolean(email.keywords?.$seen)
             const previousSeen = seenMap[email.id]
