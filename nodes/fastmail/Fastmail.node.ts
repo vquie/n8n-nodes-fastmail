@@ -167,9 +167,6 @@ function simplifyEmail (email: EmailRecord, includeBodyValues = false): JsonObje
     const htmlBody = extractBodyValue(email.htmlBody, bodyValues)
     if (textBody != null) simplified.textBody = textBody
     if (htmlBody != null) simplified.htmlBody = htmlBody
-    if (Object.keys(bodyValues).length > 0) {
-      simplified.bodyValues = bodyValues
-    }
   }
 
   return simplified
@@ -837,11 +834,17 @@ export class Fastmail implements INodeType {
             if (identity == null) {
               throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
             }
+            const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
+            if (draftMailboxId == null) {
+              throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
+            }
 
             const createEmail: JsonObject = {
               from: [{ email: identity.email, name: identity.name }],
               to,
-              subject
+              subject,
+              keywords: { $draft: true },
+              mailboxIds: { [draftMailboxId]: true }
             }
             if (cc.length > 0) createEmail.cc = cc
             if (bcc.length > 0) createEmail.bcc = bcc
@@ -858,8 +861,8 @@ export class Fastmail implements INodeType {
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
 
             const sendResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
-              ['Email/set', { accountId: mailAccountId, create: { outgoing: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#outgoing' } } }, 's1']
+              ['Email/set', { accountId: mailAccountId, create: { draft: createEmail } }, 'c1'],
+              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#draft' } } }, 's1']
             ])
 
             returnData.push({
@@ -904,6 +907,10 @@ export class Fastmail implements INodeType {
             if (identity == null) {
               throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
             }
+            const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
+            if (draftMailboxId == null) {
+              throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
+            }
 
             const recipients: EmailAddress[] = [...(original.from ?? [])]
             if (replyAll) {
@@ -920,7 +927,9 @@ export class Fastmail implements INodeType {
             const createEmail: JsonObject = {
               from: [{ email: identity.email, name: identity.name }],
               to: recipients,
-              subject
+              subject,
+              keywords: { $draft: true },
+              mailboxIds: { [draftMailboxId]: true }
             }
 
             if (original.messageId?.[0]) {
@@ -939,8 +948,8 @@ export class Fastmail implements INodeType {
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
-              ['Email/set', { accountId: mailAccountId, create: { reply: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#reply' } } }, 's1']
+              ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
+              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#replyDraft' } } }, 's1']
             ])
 
             const emailSetResult = methodResult<JmapSetResult>(replyResponse, 'Email/set')
@@ -1062,8 +1071,11 @@ export class Fastmail implements INodeType {
             if (identity == null) {
               throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
             }
-
             const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
+            if (draftMailboxId == null) {
+              throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
+            }
+
             const createEmail: JsonObject = {
               from: [{ email: identity.email, name: identity.name }],
               to,
@@ -1286,6 +1298,10 @@ export class Fastmail implements INodeType {
             if (identity == null) {
               throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
             }
+            const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
+            if (draftMailboxId == null) {
+              throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
+            }
 
             const recipients: EmailAddress[] = [...(original.from ?? [])]
             if (replyAll) {
@@ -1302,7 +1318,9 @@ export class Fastmail implements INodeType {
             const createEmail: JsonObject = {
               from: [{ email: identity.email, name: identity.name }],
               to: recipients,
-              subject
+              subject,
+              keywords: { $draft: true },
+              mailboxIds: { [draftMailboxId]: true }
             }
 
             if (original.messageId?.[0]) {
@@ -1321,8 +1339,8 @@ export class Fastmail implements INodeType {
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
-              ['Email/set', { accountId: mailAccountId, create: { reply: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#reply' } } }, 's1']
+              ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
+              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#replyDraft' } } }, 's1']
             ])
 
             returnData.push({
