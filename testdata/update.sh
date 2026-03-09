@@ -9,7 +9,7 @@ N8N_VERSION="${N8N_VERSION:-latest}"
 
 mkdir -p "${N8N_CUSTOM_DIR}"
 if [[ -L "${PACKAGE_LINK}" || -d "${PACKAGE_LINK}" ]]; then
-	rm -rf "${PACKAGE_LINK}"
+  rm -rf "${PACKAGE_LINK}"
 fi
 ln -sfn "${REPO_ROOT}" "${PACKAGE_LINK}"
 
