@@ -14,31 +14,52 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 ## Operations
 
-This node is designed for broad usability (non-JSON-first UI) and now includes:
+This node provides structured actions for working with Fastmail messages, labels, drafts, and threads.
 
-- `Email`
-  - `List in Mailbox` (with live mailbox picker)
-  - `Get by ID`
-  - `Mark as Read`
-  - `Mark as Unread`
-  - `Delete`
-  - `Send` (with live identity picker)
-- `Mailbox`
-  - `List`
-  - `Get by ID` (with live mailbox picker)
-- `Identity`
-  - `List`
-- `Session`
-  - Session metadata
-- `Raw JMAP (Advanced)`
-  - Free method name + args for power users and edge methods
+### Message Actions
+
+- Add label to message
+- Delete a message
+- Get a message
+- Get many messages
+- Mark a message as read
+- Mark a message as unread
+- Remove label from message
+- Reply to a message
+- Send a message
+- Send message and wait for response
+
+### Label Actions
+
+- Create a label
+- Delete a label
+- Get label info
+- Get many labels
+
+### Draft Actions
+
+- Create a draft
+- Delete a draft
+- Get a draft
+- Get many drafts
+
+### Thread Actions
+
+- Add label to thread
+- Delete a thread
+- Get a thread
+- Get many threads
+- Remove label from thread
+- Reply to a message
+- Trash a thread
+- Untrash a thread
 
 ### Live options
 
 The node fetches available Fastmail data directly for dropdowns:
 
-- Mailboxes (`Mailbox/get`)
-- Identities (`Identity/get`)
+- Labels (mapped to Fastmail mailboxes)
+- Identities
 
 ## Credentials
 
