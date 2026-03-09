@@ -9,7 +9,7 @@
 	"homepage": "",
 	"author": {
 		"name": "Vitali Quiering",
-		"email": "v.quiering@me.com"
+		"email": "vitali@fastmask.app"
 	},
 	"repository": {
 		"type": "git",
@@ -43,7 +43,7 @@
 		"eslint-plugin-n8n-nodes-base": "^1.16.4",
 		"gulp": "^5.0.0",
 		"gulp-cli": "^3.0.0",
-		"n8n-workflow": "^2.0.0",
+		"n8n-workflow": "^2.4.0",
 		"prettier": "^3.5.3",
 		"typescript": "^5.8.2"
 	}
