@@ -46,6 +46,8 @@ interface EmailRecord {
   preview?: string
 }
 
+type TriggerEventType = 'newEmail' | 'deletedEmail' | 'read' | 'unread' | 'updated'
+
 const JMAP_CORE = 'urn:ietf:params:jmap:core'
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail'
 const MAX_SSE_BUFFER = 2 * 1024 * 1024
@@ -114,7 +116,7 @@ function formatAddressList (addresses?: EmailAddress[]): string[] {
 
 function simplifyEmail (email: EmailRecord): JsonObject {
   return {
-    id: email.id,
+    messageId: email.id,
     subject: email.subject ?? '',
     preview: email.preview ?? '',
     receivedAt: email.receivedAt ?? null,
@@ -122,8 +124,7 @@ function simplifyEmail (email: EmailRecord): JsonObject {
     mailboxIds: Object.keys(email.mailboxIds ?? {}),
     from: formatAddressList(email.from),
     to: formatAddressList(email.to),
-    isRead: Boolean(email.keywords?.$seen),
-    raw: email
+    isRead: Boolean(email.keywords?.$seen)
   }
 }
 
@@ -159,7 +160,7 @@ export class FastmailTrigger implements INodeType {
     icon: 'file:fastmail.svg',
     group: ['trigger'],
     version: 1,
-    description: 'Triggers on new Fastmail messages using JMAP event stream',
+    description: 'Triggers on Fastmail message events using JMAP event stream',
     defaults: {
       name: 'Fastmail Trigger'
     },
@@ -173,14 +174,45 @@ export class FastmailTrigger implements INodeType {
     ],
     properties: [
       {
+        displayName: 'Events',
+        name: 'events',
+        type: 'multiOptions',
+        default: ['newEmail'],
+        description: 'Which message events should trigger workflow execution',
+        options: [
+          { name: 'New Email', value: 'newEmail' },
+          { name: 'Email Deleted', value: 'deletedEmail' },
+          { name: 'Marked as Read', value: 'read' },
+          { name: 'Marked as Unread', value: 'unread' },
+          { name: 'Message Updated', value: 'updated' }
+        ]
+      },
+      {
+        displayName: 'Mailbox Scope',
+        name: 'mailboxScope',
+        type: 'options',
+        default: 'all',
+        options: [
+          { name: 'All Mailboxes', value: 'all' },
+          { name: 'Specific Mailbox', value: 'specific' }
+        ],
+        description: 'Choose whether to watch all mailboxes or only one specific mailbox'
+      },
+      {
         displayName: 'Filter by Label Name or ID',
         name: 'filterLabelId',
         type: 'options',
         typeOptions: {
           loadOptionsMethod: 'getLabels'
         },
-        description: 'Optional label filter. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
-        default: ''
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+        default: '',
+        required: true,
+        displayOptions: {
+          show: {
+            mailboxScope: ['specific']
+          }
+        }
       },
       {
         displayName: 'Emit Existing Messages on Start',
@@ -259,7 +291,14 @@ export class FastmailTrigger implements INodeType {
   async trigger (this: ITriggerFunctions): Promise<ITriggerResponse> {
     const credentials = await this.getCredentials('fastmailApi')
     const token = getTokenFromCredentials(credentials)
-    const filterLabelId = this.getNodeParameter('filterLabelId', '') as string
+    const events = (this.getNodeParameter('events', ['newEmail']) as string[]) as TriggerEventType[]
+    const selectedEvents = new Set<TriggerEventType>(events)
+    const mailboxScope = this.getNodeParameter('mailboxScope', 'all') as 'all' | 'specific'
+    const selectedLabelId = this.getNodeParameter('filterLabelId', '') as string
+    const filterLabelId = mailboxScope === 'specific' ? selectedLabelId : ''
+    if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
+      throw new Error('Mailbox is required when "Specific Mailbox" is selected.')
+    }
     const emitExistingOnStart = this.getNodeParameter('emitExistingOnStart', false) as boolean
     const initialLimit = this.getNodeParameter('initialLimit', 10) as number
     const pingSeconds = this.getNodeParameter('pingSeconds', 300) as number
@@ -275,10 +314,36 @@ export class FastmailTrigger implements INodeType {
     let reconnectAttempt = 0
     let connecting = false
 
-    const emitEmails = (emails: EmailRecord[]): void => {
+    const emitEmailEvent = (event: TriggerEventType, email: EmailRecord, source: 'bootstrap' | 'change'): void => {
+      if (!selectedEvents.has(event)) return
+      const payload = simplifyEmail(email)
+      const item: INodeExecutionData = {
+        json: {
+          event,
+          source,
+          ...payload
+        }
+      }
+      this.emit([[item]])
+    }
+
+    const emitDeletedEvent = (messageId: string): void => {
+      if (!selectedEvents.has('deletedEmail')) return
+      const item: INodeExecutionData = {
+        json: {
+          event: 'deletedEmail',
+          source: 'change',
+          messageId
+        }
+      }
+      this.emit([[item]])
+    }
+
+    const emitEmails = (event: TriggerEventType, source: 'bootstrap' | 'change', emails: EmailRecord[]): void => {
       if (emails.length === 0) return
-      const data: INodeExecutionData[] = emails.map((email) => ({ json: simplifyEmail(email) }))
-      this.emit([data])
+      for (const email of emails) {
+        emitEmailEvent(event, email, source)
+      }
     }
 
     const getQueryState = async (session: SessionResponse, accountId: string): Promise<string> => {
@@ -305,9 +370,20 @@ export class FastmailTrigger implements INodeType {
       return methodResult<{ list?: EmailRecord[] }>(response, 'Email/get').list ?? []
     }
 
+    const getEmailState = async (session: SessionResponse, accountId: string): Promise<string> => {
+      const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
+        ['Email/get', { accountId, ids: [], properties: ['id'] }, 's1']
+      ])
+      return methodResult<{ state?: string }>(response, 'Email/get').state ?? ''
+    }
+
     const syncChanges = async (session: SessionResponse, accountId: string): Promise<void> => {
       const previousState = typeof staticData.lastQueryState === 'string' ? staticData.lastQueryState : ''
+      const previousEmailState = typeof staticData.lastEmailState === 'string' ? staticData.lastEmailState : ''
+      const seenMap = (staticData.seenByMessageId as Record<string, boolean> | undefined) ?? {}
+      staticData.seenByMessageId = seenMap
       const filter = filterLabelId ? { inMailbox: filterLabelId } : undefined
+      const emittedDeletedIds = new Set<string>()
 
       if (previousState === '') {
         if (emitExistingOnStart) {
@@ -317,11 +393,16 @@ export class FastmailTrigger implements INodeType {
           const bootstrap = methodResult<{ ids?: string[], queryState?: string }>(bootstrapResponse, 'Email/query')
           const ids = bootstrap.ids ?? []
           const emails = await getEmailsByIds(session, accountId, ids)
-          emitEmails(emails)
+          emitEmails('newEmail', 'bootstrap', emails)
+          for (const email of emails) {
+            seenMap[email.id] = Boolean(email.keywords?.$seen)
+          }
           staticData.lastQueryState = bootstrap.queryState ?? ''
         } else {
           staticData.lastQueryState = await getQueryState(session, accountId)
         }
+
+        staticData.lastEmailState = await getEmailState(session, accountId)
         return
       }
 
@@ -341,13 +422,69 @@ export class FastmailTrigger implements INodeType {
         return
       }
 
-      const newIds = (changes.added ?? []).map((entry) => entry.id).filter(Boolean)
-      if (newIds.length > 0) {
-        const emails = await getEmailsByIds(session, accountId, newIds)
-        emitEmails(emails)
+      const addedIds = (changes.added ?? []).map((entry) => entry.id).filter(Boolean)
+      if (addedIds.length > 0) {
+        const emails = await getEmailsByIds(session, accountId, addedIds)
+        emitEmails('newEmail', 'change', emails)
+        for (const email of emails) {
+          seenMap[email.id] = Boolean(email.keywords?.$seen)
+        }
+      }
+
+      for (const removedId of (changes.removed ?? [])) {
+        delete seenMap[removedId]
+        emitDeletedEvent(removedId)
+        emittedDeletedIds.add(removedId)
       }
 
       staticData.lastQueryState = changes.newQueryState
+
+      if (previousEmailState !== '') {
+        const emailChangesResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
+          ['Email/changes', { accountId, sinceState: previousEmailState }, 'ec1']
+        ])
+
+        const emailChanges = methodResult<{
+          created?: string[]
+          updated?: string[]
+          destroyed?: string[]
+          newState?: string
+          hasMoreChanges?: boolean
+        }>(emailChangesResponse, 'Email/changes')
+
+        if (emailChanges.newState != null) {
+          staticData.lastEmailState = emailChanges.newState
+        }
+
+        for (const destroyedId of (emailChanges.destroyed ?? [])) {
+          delete seenMap[destroyedId]
+          if (!emittedDeletedIds.has(destroyedId)) {
+            emitDeletedEvent(destroyedId)
+          }
+        }
+
+        const changedIds = [...new Set([...(emailChanges.created ?? []), ...(emailChanges.updated ?? [])])]
+        if (changedIds.length > 0) {
+          const emails = await getEmailsByIds(session, accountId, changedIds)
+          for (const email of emails) {
+            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) {
+              continue
+            }
+
+            const currentSeen = Boolean(email.keywords?.$seen)
+            const previousSeen = seenMap[email.id]
+            if (previousSeen !== undefined && previousSeen !== currentSeen) {
+              emitEmailEvent(currentSeen ? 'read' : 'unread', email, 'change')
+            } else if (selectedEvents.has('updated')) {
+              emitEmailEvent('updated', email, 'change')
+            }
+
+            seenMap[email.id] = currentSeen
+          }
+        }
+      } else {
+        staticData.lastEmailState = await getEmailState(session, accountId)
+      }
     }
 
     const resetForceReconnectTimer = (): void => {

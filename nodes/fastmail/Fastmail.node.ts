@@ -536,18 +536,37 @@ export class Fastmail implements INodeType {
         }
       },
       {
+        displayName: 'Mailbox Scope',
+        name: 'mailboxScope',
+        type: 'options',
+        default: 'all',
+        options: [
+          { name: 'All Mailboxes', value: 'all' },
+          { name: 'Specific Mailbox', value: 'specific' }
+        ],
+        description: 'Choose whether to return results from all mailboxes or only one mailbox',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['getMany']
+          }
+        }
+      },
+      {
         displayName: 'Filter by Label Name or ID',
         name: 'filterLabelId',
         type: 'options',
         typeOptions: {
           loadOptionsMethod: 'getLabels'
         },
-        description: 'Optional label filter. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
         default: '',
+        required: true,
         displayOptions: {
           show: {
             resource: ['message', 'thread'],
-            operation: ['getMany']
+            operation: ['getMany'],
+            mailboxScope: ['specific']
           }
         }
       },
@@ -809,7 +828,12 @@ export class Fastmail implements INodeType {
 
           if (operation === 'getMany') {
             const limit = this.getNodeParameter('limit', i, 25)
-            const filterLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
+            const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            const filterLabelId = mailboxScope === 'specific' ? selectedLabelId : ''
+            if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
+              throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
+            }
             const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
 
             const filter = filterLabelId ? { inMailbox: filterLabelId } : {}
@@ -1270,7 +1294,12 @@ export class Fastmail implements INodeType {
 
           if (operation === 'getMany') {
             const limit = this.getNodeParameter('limit', i, 25)
-            const filterLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
+            const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            const filterLabelId = mailboxScope === 'specific' ? selectedLabelId : ''
+            if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
+              throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
+            }
             const includeEmailIds = this.getNodeParameter('includeEmailIds', i, false) as boolean
             const filter = filterLabelId ? { inMailbox: filterLabelId } : {}
 
