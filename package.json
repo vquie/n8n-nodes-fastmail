@@ -172,7 +172,7 @@
     "component-type": "^2.0.0",
     "compressible": "^2.0.18",
     "compression": "^1.8.1",
-    "concat-map": "^0.0.1",
+    "concat-map": "^0.0.2",
     "concat-stream": "^2.0.0",
     "console-control-strings": "^1.1.0",
     "console-table-printer": "^2.15.0",
