@@ -1,5 +1,4 @@
 import {
-  IDataObject,
   ILoadOptionsFunctions,
   INodeExecutionData,
   INodePropertyOptions,
@@ -305,7 +304,7 @@ export class FastmailTrigger implements INodeType {
     const maxReconnectDelaySeconds = this.getNodeParameter('maxReconnectDelaySeconds', 60) as number
     const forceReconnectMinutes = this.getNodeParameter('forceReconnectMinutes', 0) as number
 
-    const staticData = this.getWorkflowStaticData('node') as IDataObject
+    const staticData = this.getWorkflowStaticData('node')
 
     let stopped = false
     let abortController: AbortController | undefined
@@ -313,7 +312,7 @@ export class FastmailTrigger implements INodeType {
     let forceReconnectTimer: NodeJS.Timeout | undefined
     let reconnectAttempt = 0
     let connecting = false
-    let trashMailboxId: string | null = null
+    let mailboxRoleById: Record<string, string> = {}
 
     const emitEmailEvent = (event: TriggerEventType, email: EmailRecord, source: 'bootstrap' | 'change'): void => {
       if (!selectedEvents.has(event)) return
@@ -484,9 +483,9 @@ export class FastmailTrigger implements INodeType {
             const wasInFilterMailbox = filterLabelId !== '' && previousMailboxIds.includes(filterLabelId)
             const isInFilterMailbox = filterLabelId === '' || email.mailboxIds?.[filterLabelId] === true
 
-            const movedToTrash = trashMailboxId != null &&
-              !previousMailboxIds.includes(trashMailboxId) &&
-              currentMailboxIds.includes(trashMailboxId)
+            const hadTrashMailbox = previousMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
+            const hasTrashMailbox = currentMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
+            const movedToTrash = !hadTrashMailbox && hasTrashMailbox
 
             if (movedToTrash || (filterLabelId !== '' && wasInFilterMailbox && !isInFilterMailbox)) {
               emitDeletedEvent(email.id)
@@ -602,9 +601,14 @@ export class FastmailTrigger implements INodeType {
       try {
         const session = await getSession(this, token)
         const accountId = getPrimaryMailAccountId(session)
-        if (trashMailboxId == null) {
+        if (Object.keys(mailboxRoleById).length === 0) {
           const mailboxes = await getMailboxes(this, token, session, accountId)
-          trashMailboxId = mailboxes.find((mailbox) => mailbox.role === 'trash')?.id ?? null
+          mailboxRoleById = mailboxes.reduce<Record<string, string>>((acc, mailbox) => {
+            if (mailbox.role != null && mailbox.role !== '') {
+              acc[mailbox.id] = mailbox.role
+            }
+            return acc
+          }, {})
         }
 
         await syncChanges(session, accountId)
