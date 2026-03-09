@@ -14,7 +14,10 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 ## Operations
 
-This node provides structured actions for working with Fastmail messages, labels, drafts, and threads.
+This package provides:
+
+- `Fastmail` for structured actions on messages, labels, drafts, and threads.
+- `Fastmail Trigger` for near real-time new-message events via JMAP event stream (SSE with reconnect).
 
 ### Message Actions
 
