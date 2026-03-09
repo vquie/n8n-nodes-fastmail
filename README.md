@@ -14,18 +14,31 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 ## Operations
 
-The node now supports broad JMAP access with these resources:
+This node is designed for broad usability (non-JSON-first UI) and now includes:
 
-- `Session` (load Fastmail JMAP session metadata)
-- `Identity` (`Identity/get`)
-- `Mailbox` (`Mailbox/get`, `Mailbox/set`)
-- `Email` (`Email/query`, `Email/get`, `Email/set`)
-- `Thread` (`Thread/query`, `Thread/get`)
-- `Submission` (`EmailSubmission/set`)
-- `Masked Email` (`MaskedEmail/get`, `MaskedEmail/set`)
-- `Raw JMAP` (custom method name + JSON args + capabilities)
+- `Email`
+  - `List in Mailbox` (with live mailbox picker)
+  - `Get by ID`
+  - `Mark as Read`
+  - `Mark as Unread`
+  - `Delete`
+  - `Send` (with live identity picker)
+- `Mailbox`
+  - `List`
+  - `Get by ID` (with live mailbox picker)
+- `Identity`
+  - `List`
+- `Session`
+  - Session metadata
+- `Raw JMAP (Advanced)`
+  - Free method name + args for power users and edge methods
 
-`Raw JMAP` is the escape hatch for methods not exposed as first-class operations yet. This makes the node usable for practically all Fastmail-exposed JMAP methods.
+### Live options
+
+The node fetches available Fastmail data directly for dropdowns:
+
+- Mailboxes (`Mailbox/get`)
+- Identities (`Identity/get`)
 
 ## Credentials
 
