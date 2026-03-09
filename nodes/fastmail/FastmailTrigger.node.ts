@@ -383,7 +383,6 @@ export class FastmailTrigger implements INodeType {
       const seenMap = (staticData.seenByMessageId as Record<string, boolean> | undefined) ?? {}
       staticData.seenByMessageId = seenMap
       const filter = filterLabelId ? { inMailbox: filterLabelId } : undefined
-      const emittedDeletedIds = new Set<string>()
 
       if (previousState === '') {
         if (emitExistingOnStart) {
@@ -430,12 +429,6 @@ export class FastmailTrigger implements INodeType {
         }
       }
 
-      for (const removedId of (changes.removed ?? [])) {
-        delete seenMap[removedId]
-        emitDeletedEvent(removedId)
-        emittedDeletedIds.add(removedId)
-      }
-
       staticData.lastQueryState = changes.newQueryState
 
       if (previousEmailState !== '') {
@@ -457,9 +450,7 @@ export class FastmailTrigger implements INodeType {
 
         for (const destroyedId of (emailChanges.destroyed ?? [])) {
           delete seenMap[destroyedId]
-          if (!emittedDeletedIds.has(destroyedId)) {
-            emitDeletedEvent(destroyedId)
-          }
+          emitDeletedEvent(destroyedId)
         }
 
         const createdIds = [...new Set(emailChanges.created ?? [])]
