@@ -96,3 +96,16 @@ Use the helper script:
 ```
 
 The script starts a `node:22-slim` container, installs dependencies, builds the node, installs `n8n`, and starts it on `http://localhost:5678`.
+
+Faster iteration options:
+
+```bash
+# Skip dependency install checks and run TypeScript-only build (default)
+SKIP_NPM_INSTALL=1 ./testdata/run.sh
+
+# Skip build completely (only restart n8n)
+SKIP_NPM_INSTALL=1 SKIP_BUILD=1 ./testdata/run.sh
+
+# Force full build including icon pipeline
+FULL_BUILD=1 ./testdata/run.sh
+```
