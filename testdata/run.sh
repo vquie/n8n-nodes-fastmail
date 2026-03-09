@@ -9,5 +9,5 @@ docker run --rm -it \
   -e N8N_SECURE_COOKIE=false \
   -e N8N_CUSTOM_EXTENSIONS=/home/node/.n8n/custom \
   -v "${REPO_ROOT}:/home/node/workspace/n8n-nodes-fastmail" \
-  node:22-slim \
+  node:24-slim \
   /bin/bash -lc "cd /home/node/workspace/n8n-nodes-fastmail/testdata && ./update.sh"
