@@ -3,6 +3,7 @@ import type { ICredentialType, INodeProperties } from 'n8n-workflow'
 export class FastmailApi implements ICredentialType {
   name = 'fastmailApi'
   displayName = 'Fastmail API'
+  icon = 'file:fastmail.svg' as const
   documentationUrl = 'https://www.fastmail.help/hc/en-us/articles/360060591073-API-Access'
   properties: INodeProperties[] = [
     {
