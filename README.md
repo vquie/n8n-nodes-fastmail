@@ -1,6 +1,5 @@
 # n8n-nodes-fastmail
 
-
 [n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
 
 [Installation](#installation)  
@@ -15,16 +14,22 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 ## Operations
 
-This node currently supports:
+The node now supports broad JMAP access with these resources:
 
-- Fetching Fastmail JMAP session/account information
-- Fetching identities from the primary mail account
-- Optional filtering by identity email
+- `Session` (load Fastmail JMAP session metadata)
+- `Identity` (`Identity/get`)
+- `Mailbox` (`Mailbox/get`, `Mailbox/set`)
+- `Email` (`Email/query`, `Email/get`, `Email/set`)
+- `Thread` (`Thread/query`, `Thread/get`)
+- `Submission` (`EmailSubmission/set`)
+- `Masked Email` (`MaskedEmail/get`, `MaskedEmail/set`)
+- `Raw JMAP` (custom method name + JSON args + capabilities)
+
+`Raw JMAP` is the escape hatch for methods not exposed as first-class operations yet. This makes the node usable for practically all Fastmail-exposed JMAP methods.
 
 ## Credentials
 
-Use a Fastmail API token with the scope required for JMAP access.
-
+Use a Fastmail API token with the required scopes for the JMAP methods you call.
 
 ## Compatibility
 
@@ -34,8 +39,10 @@ Tested with:
 
 ## Resources
 
-* [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
-* [Fastmail](https://www.fastmail.com/)
+- [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
+- [Fastmail Developer API](https://www.fastmail.com/dev/)
+- [JMAP (RFC 8620)](https://www.rfc-editor.org/rfc/rfc8620)
+- [JMAP Mail (RFC 8621)](https://www.rfc-editor.org/rfc/rfc8621)
 
 ## Local development (Docker)
 
