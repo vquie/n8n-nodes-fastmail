@@ -126,6 +126,28 @@ function methodResult<T = JsonObject> (response: JmapResponse, methodName: strin
   return record[1] as T
 }
 
+function methodResultByCallId<T = JsonObject> (
+  response: JmapResponse,
+  callId: string,
+  expectedMethodName: string
+): T {
+  const record = response.methodResponses?.find(([, , id]) => id === callId)
+  if (record == null) {
+    throw new Error(`Missing method response for callId ${callId}`)
+  }
+
+  const [methodName, payload] = record
+  if (methodName === 'error') {
+    throw new Error(`JMAP call ${callId} failed: ${JSON.stringify(payload)}`)
+  }
+
+  if (methodName !== expectedMethodName) {
+    throw new Error(`Unexpected method response for ${callId}: ${methodName} (expected ${expectedMethodName})`)
+  }
+
+  return payload as T
+}
+
 function parseCsvEmails (value: string): Array<{ email: string }> {
   return value
     .split(',')
@@ -211,6 +233,10 @@ function getEmailProperties (includeBodyValues: boolean): string[] {
   return base
 }
 
+function hasBodyContent (textBody: string, htmlBody: string): boolean {
+  return textBody.trim() !== '' || htmlBody.trim() !== ''
+}
+
 function summarizeThread (thread: ThreadRecord, emailMap: Map<string, EmailRecord>, includeEmailIds: boolean): JsonObject {
   const emailIds = thread.emailIds ?? []
   const emails = emailIds
@@ -226,7 +252,7 @@ function summarizeThread (thread: ThreadRecord, emailMap: Map<string, EmailRecor
   const summary: JsonObject = {
     id: thread.id,
     messageCount: emailIds.length,
-    unreadCount: emails.filter((email) => !Boolean(email.keywords?.$seen)).length,
+    unreadCount: emails.filter((email) => !email.keywords?.$seen).length,
     latestMessageSubject: latest?.subject ?? null,
     latestMessageFrom: latest?.from?.[0]?.email ?? null,
     latestMessageAt: latest?.receivedAt ?? null,
@@ -329,6 +355,24 @@ async function getThreadEmailIds (
   ])
   const thread = methodResult<{ list?: ThreadRecord[] }>(response, 'Thread/get').list?.[0]
   return thread?.emailIds ?? []
+}
+
+async function destroyEmailById (
+  node: IExecuteFunctions,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  emailId: string
+): Promise<void> {
+  const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
+    ['Email/set', { accountId, destroy: [emailId] }, 'd1']
+  ])
+
+  const result = methodResultByCallId<JmapSetResult>(response, 'd1', 'Email/set')
+  if (!(result.destroyed ?? []).includes(emailId)) {
+    const notDestroyed = JSON.stringify(result.notDestroyed ?? {})
+    throw new Error(`Temporary draft cleanup failed. notDestroyed: ${notDestroyed}`)
+  }
 }
 
 export class Fastmail implements INodeType {
@@ -693,7 +737,7 @@ export class Fastmail implements INodeType {
             operation: ['create']
           }
         }
-      },
+      }
     ]
   }
 
@@ -822,6 +866,9 @@ export class Fastmail implements INodeType {
             const subject = this.getNodeParameter('subject', i, '') as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
+            if (!hasBodyContent(textBody, htmlBody)) {
+              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            }
 
             if (to.length === 0) {
               throw new NodeOperationError(this.getNode(), 'At least one recipient is required', { itemIndex: i })
@@ -862,29 +909,43 @@ export class Fastmail implements INodeType {
 
             const sendResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { draft: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#draft' } } }, 's1']
+              [
+                'EmailSubmission/set',
+                {
+                  accountId: submissionAccountId,
+                  create: { submit: { identityId, emailId: '#draft' } }
+                },
+                's1'
+              ]
             ])
+
+            const emailSetResult = methodResultByCallId<JmapSetResult>(sendResponse, 'c1', 'Email/set')
+            const createdId = firstCreatedId(emailSetResult)
+            if (createdId == null) {
+              const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
+              throw new NodeOperationError(this.getNode(), `Email was not created. notCreated: ${notCreated}`, { itemIndex: i })
+            }
+            const submissionResult = methodResultByCallId<JmapSetResult>(sendResponse, 's1', 'EmailSubmission/set')
+            if (firstCreatedId(submissionResult) == null) {
+              const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
+              throw new NodeOperationError(this.getNode(), `Email submission failed. notCreated: ${notCreated}`, { itemIndex: i })
+            }
+
+            let draftCleanup: { success: boolean, error?: string } = { success: true }
+            try {
+              await destroyEmailById(this, token, session, mailAccountId, createdId)
+            } catch (error) {
+              draftCleanup = { success: false, error: (error as Error).message }
+            }
 
             returnData.push({
               json: {
                 success: true,
-                  sentMessageId: (() => {
-                    const emailSetResult = methodResult<JmapSetResult>(sendResponse, 'Email/set')
-                    const createdId = firstCreatedId(emailSetResult)
-                    if (createdId == null) {
-                      const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
-                      throw new NodeOperationError(this.getNode(), `Email was not created. notCreated: ${notCreated}`, { itemIndex: i })
-                    }
-                    const submissionResult = methodResult<JmapSetResult>(sendResponse, 'EmailSubmission/set')
-                    if (firstCreatedId(submissionResult) == null) {
-                      const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
-                      throw new NodeOperationError(this.getNode(), `Email submission failed. notCreated: ${notCreated}`, { itemIndex: i })
-                    }
-                    return createdId
-                  })()
-                },
-                pairedItem: { item: i }
-              })
+                sentMessageId: createdId,
+                draftCleanup
+              },
+              pairedItem: { item: i }
+            })
             continue
           }
 
@@ -893,6 +954,9 @@ export class Fastmail implements INodeType {
             const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
+            if (!hasBodyContent(textBody, htmlBody)) {
+              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            }
             const replyAll = this.getNodeParameter('replyAll', i, false) as boolean
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
@@ -949,25 +1013,40 @@ export class Fastmail implements INodeType {
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#replyDraft' } } }, 's1']
+              [
+                'EmailSubmission/set',
+                {
+                  accountId: submissionAccountId,
+                  create: { submit: { identityId, emailId: '#replyDraft' } }
+                },
+                's1'
+              ]
             ])
 
-            const emailSetResult = methodResult<JmapSetResult>(replyResponse, 'Email/set')
+            const emailSetResult = methodResultByCallId<JmapSetResult>(replyResponse, 'c1', 'Email/set')
             const createdReplyId = firstCreatedId(emailSetResult)
             if (createdReplyId == null) {
               const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
               throw new NodeOperationError(this.getNode(), `Reply could not be created. notCreated: ${notCreated}`, { itemIndex: i })
             }
-            const submissionResult = methodResult<JmapSetResult>(replyResponse, 'EmailSubmission/set')
+            const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
             if (firstCreatedId(submissionResult) == null) {
               const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
               throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
             }
 
+            let draftCleanup: { success: boolean, error?: string } = { success: true }
+            try {
+              await destroyEmailById(this, token, session, mailAccountId, createdReplyId)
+            } catch (error) {
+              draftCleanup = { success: false, error: (error as Error).message }
+            }
+
             returnData.push({
               json: {
                 success: true,
-                replyMessageId: createdReplyId
+                replyMessageId: createdReplyId,
+                draftCleanup
               },
               pairedItem: { item: i }
             })
@@ -1063,6 +1142,9 @@ export class Fastmail implements INodeType {
             const subject = this.getNodeParameter('subject', i, '') as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
+            if (!hasBodyContent(textBody, htmlBody)) {
+              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            }
 
             const identityResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
               ['Identity/get', { accountId: submissionAccountId, ids: [identityId] }, 'i1']
@@ -1285,6 +1367,9 @@ export class Fastmail implements INodeType {
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
             const replyAll = this.getNodeParameter('replyAll', i, false) as boolean
+            if (!hasBodyContent(textBody, htmlBody)) {
+              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            }
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
             if (original == null) {
@@ -1340,26 +1425,40 @@ export class Fastmail implements INodeType {
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
-              ['EmailSubmission/set', { accountId: submissionAccountId, create: { submit: { identityId, emailId: '#replyDraft' } } }, 's1']
+              [
+                'EmailSubmission/set',
+                {
+                  accountId: submissionAccountId,
+                  create: { submit: { identityId, emailId: '#replyDraft' } }
+                },
+                's1'
+              ]
             ])
+
+            const emailSetResult = methodResultByCallId<JmapSetResult>(replyResponse, 'c1', 'Email/set')
+            const createdId = firstCreatedId(emailSetResult)
+            if (createdId == null) {
+              const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
+              throw new NodeOperationError(this.getNode(), `Reply could not be created. notCreated: ${notCreated}`, { itemIndex: i })
+            }
+            const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
+            if (firstCreatedId(submissionResult) == null) {
+              const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
+              throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
+            }
+
+            let draftCleanup: { success: boolean, error?: string } = { success: true }
+            try {
+              await destroyEmailById(this, token, session, mailAccountId, createdId)
+            } catch (error) {
+              draftCleanup = { success: false, error: (error as Error).message }
+            }
 
             returnData.push({
               json: {
                 success: true,
-                replyMessageId: (() => {
-                  const emailSetResult = methodResult<JmapSetResult>(replyResponse, 'Email/set')
-                  const createdId = firstCreatedId(emailSetResult)
-                  if (createdId == null) {
-                    const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
-                    throw new NodeOperationError(this.getNode(), `Reply could not be created. notCreated: ${notCreated}`, { itemIndex: i })
-                  }
-                  const submissionResult = methodResult<JmapSetResult>(replyResponse, 'EmailSubmission/set')
-                  if (firstCreatedId(submissionResult) == null) {
-                    const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
-                    throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
-                  }
-                  return createdId
-                })()
+                replyMessageId: createdId,
+                draftCleanup
               },
               pairedItem: { item: i }
             })
