@@ -27,7 +27,6 @@ This node provides structured actions for working with Fastmail messages, labels
 - Remove label from message
 - Reply to a message
 - Send a message
-- Send message and wait for response
 
 ### Label Actions
 
