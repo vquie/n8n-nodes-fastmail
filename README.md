@@ -31,6 +31,19 @@ This package provides:
 - Reply to a message
 - Send a message
 
+### Attachment Support
+
+Attachments are supported as options on existing operations (not as separate actions):
+
+- Upload from input binary properties on:
+  - Message `Send`
+  - Message `Reply`
+  - Draft `Create`
+  - Thread `Reply`
+- Download to output binary on:
+  - Message `Get`
+  - Message `Get Many`
+
 ### Label Actions
 
 - Create a label
@@ -62,6 +75,13 @@ The node fetches available Fastmail data directly for dropdowns:
 
 - Labels (mapped to Fastmail mailboxes)
 - Identities
+
+### UI behavior
+
+- Optional fields are hidden by default.
+- Use `Compose Options` to enable granular fields like `Cc`, `Bcc`, `Reply All`, and attachment binary mapping.
+- Use `Fetch Options` to enable granular fields like `Search`, `Read Status`, body values, and attachment download settings.
+- `Mailbox Scope` and mailbox selection stay as dedicated top-level fields on `Get Many` (message/thread) for reliable mailbox picking.
 
 ## Credentials
 

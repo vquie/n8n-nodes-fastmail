@@ -13,6 +13,8 @@ type JmapMethodCall = [string, JsonObject, string]
 
 interface SessionResponse {
   apiUrl: string
+  uploadUrl?: string
+  downloadUrl?: string
   username?: string
   accounts?: Record<string, { accountCapabilities?: Record<string, unknown> }>
   primaryAccounts?: Record<string, string>
@@ -57,6 +59,17 @@ interface EmailRecord {
   textBody?: Array<{ partId?: string }>
   htmlBody?: Array<{ partId?: string }>
   bodyValues?: Record<string, unknown>
+  attachments?: EmailAttachmentPart[]
+}
+
+interface EmailAttachmentPart {
+  partId?: string
+  blobId?: string
+  name?: string
+  type?: string
+  size?: number
+  cid?: string
+  disposition?: string
 }
 
 interface ThreadRecord {
@@ -192,6 +205,21 @@ function simplifyEmail (email: EmailRecord, includeBodyValues = false): JsonObje
     if (htmlBody != null) simplified.htmlBody = htmlBody
   }
 
+  const attachments = (email.attachments ?? [])
+    .filter((attachment) => typeof attachment.blobId === 'string' && attachment.blobId !== '')
+    .map((attachment) => ({
+      partId: attachment.partId ?? null,
+      blobId: attachment.blobId ?? null,
+      fileName: attachment.name ?? null,
+      mimeType: attachment.type ?? null,
+      size: attachment.size ?? null,
+      disposition: attachment.disposition ?? null,
+      cid: attachment.cid ?? null
+    }))
+  if (attachments.length > 0) {
+    simplified.attachments = attachments
+  }
+
   return simplified
 }
 
@@ -211,7 +239,7 @@ function extractBodyValue (parts: Array<{ partId?: string }> | undefined, bodyVa
   return null
 }
 
-function getEmailProperties (includeBodyValues: boolean): string[] {
+function getEmailProperties (includeBodyValues: boolean, includeAttachments = false): string[] {
   const base = [
     'id',
     'threadId',
@@ -230,8 +258,154 @@ function getEmailProperties (includeBodyValues: boolean): string[] {
   if (includeBodyValues) {
     base.push('textBody', 'htmlBody', 'bodyValues')
   }
+  if (includeAttachments) {
+    base.push('attachments')
+  }
 
   return base
+}
+
+function parseBinaryPropertyNames (value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function resolveJmapUrlTemplate (template: string, values: Record<string, string>): string {
+  return template.replace(/\{([^}]+)\}/g, (_match, key: string) => encodeURIComponent(values[key] ?? ''))
+}
+
+function toBinaryPropertyKey (prefix: string, index: number): string {
+  const cleanedPrefix = prefix.trim().replace(/[^a-zA-Z0-9_]/g, '_')
+  const effectivePrefix = cleanedPrefix === '' ? 'attachment_' : cleanedPrefix
+  return `${effectivePrefix}${index + 1}`
+}
+
+async function uploadAttachmentsFromBinary (
+  node: IExecuteFunctions,
+  item: INodeExecutionData,
+  itemIndex: number,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  binaryPropertyNames: string[]
+): Promise<{ emailAttachments: JsonObject[], uploadedAttachments: JsonObject[] }> {
+  if (binaryPropertyNames.length === 0) {
+    return { emailAttachments: [], uploadedAttachments: [] }
+  }
+  if (typeof session.uploadUrl !== 'string' || session.uploadUrl.trim() === '') {
+    throw new NodeOperationError(node.getNode(), 'Fastmail session did not provide an uploadUrl', { itemIndex })
+  }
+
+  const emailAttachments: JsonObject[] = []
+  const uploadedAttachments: JsonObject[] = []
+  const uploadUrl = resolveJmapUrlTemplate(session.uploadUrl, { accountId })
+
+  for (const propertyName of binaryPropertyNames) {
+    const binaryData = item.binary?.[propertyName]
+    if (binaryData == null) {
+      throw new NodeOperationError(node.getNode(), `Binary property "${propertyName}" was not found on input item`, { itemIndex })
+    }
+
+    const buffer = await node.helpers.getBinaryDataBuffer(itemIndex, propertyName)
+    const fileName = typeof binaryData.fileName === 'string' && binaryData.fileName !== ''
+      ? binaryData.fileName
+      : propertyName
+    const mimeType = typeof binaryData.mimeType === 'string' && binaryData.mimeType !== ''
+      ? binaryData.mimeType
+      : 'application/octet-stream'
+
+    const uploadResponse = await node.helpers.httpRequest({
+      method: 'POST',
+      url: uploadUrl,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': mimeType
+      },
+      body: buffer,
+      json: true
+    }) as { blobId?: string, type?: string, size?: number }
+
+    if (typeof uploadResponse.blobId !== 'string' || uploadResponse.blobId === '') {
+      throw new NodeOperationError(node.getNode(), `Attachment upload failed for "${propertyName}"`, { itemIndex })
+    }
+
+    emailAttachments.push({
+      blobId: uploadResponse.blobId,
+      type: uploadResponse.type ?? mimeType,
+      name: fileName,
+      disposition: 'attachment'
+    })
+    uploadedAttachments.push({
+      binaryProperty: propertyName,
+      blobId: uploadResponse.blobId,
+      fileName,
+      mimeType: uploadResponse.type ?? mimeType,
+      size: uploadResponse.size ?? null
+    })
+  }
+
+  return { emailAttachments, uploadedAttachments }
+}
+
+async function downloadEmailAttachments (
+  node: IExecuteFunctions,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  email: EmailRecord,
+  binaryPropertyPrefix: string
+): Promise<{ binary: Record<string, any>, attachments: JsonObject[] }> {
+  if (typeof session.downloadUrl !== 'string' || session.downloadUrl.trim() === '') {
+    throw new Error('Fastmail session did not provide a downloadUrl')
+  }
+
+  const attachments = (email.attachments ?? []).filter((attachment) => typeof attachment.blobId === 'string' && attachment.blobId !== '')
+  if (attachments.length === 0) {
+    return { binary: {}, attachments: [] }
+  }
+
+  const binary: Record<string, any> = {}
+  const downloadedAttachments: JsonObject[] = []
+
+  for (let index = 0; index < attachments.length; index++) {
+    const attachment = attachments[index]
+    const blobId = attachment.blobId as string
+    const fileName = attachment.name ?? `attachment-${index + 1}`
+    const mimeType = attachment.type ?? 'application/octet-stream'
+    const binaryProperty = toBinaryPropertyKey(binaryPropertyPrefix, index)
+
+    const downloadUrl = resolveJmapUrlTemplate(session.downloadUrl, {
+      accountId,
+      blobId,
+      name: fileName,
+      type: mimeType
+    })
+
+    const contentBuffer = await node.helpers.httpRequest({
+      method: 'GET',
+      url: downloadUrl,
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      encoding: 'arraybuffer'
+    }) as Buffer
+
+    binary[binaryProperty] = await node.helpers.prepareBinaryData(contentBuffer, fileName, mimeType)
+    downloadedAttachments.push({
+      partId: attachment.partId ?? null,
+      blobId,
+      fileName,
+      mimeType,
+      size: attachment.size ?? null,
+      disposition: attachment.disposition ?? null,
+      cid: attachment.cid ?? null,
+      binaryProperty
+    })
+  }
+
+  return { binary, attachments: downloadedAttachments }
 }
 
 function buildEmailQueryFilter (
@@ -365,7 +539,8 @@ async function getEmailById (
   session: SessionResponse,
   accountId: string,
   emailId: string,
-  includeBodyValues = false
+  includeBodyValues = false,
+  includeAttachments = false
 ): Promise<EmailRecord | null> {
   const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
     [
@@ -373,7 +548,7 @@ async function getEmailById (
       {
         accountId,
         ids: [emailId],
-        properties: getEmailProperties(includeBodyValues),
+        properties: getEmailProperties(includeBodyValues, includeAttachments),
         fetchTextBodyValues: includeBodyValues,
         fetchHTMLBodyValues: includeBodyValues,
         fetchAllBodyValues: includeBodyValues
@@ -391,7 +566,8 @@ async function getEmailsByIds (
   session: SessionResponse,
   accountId: string,
   ids: string[],
-  includeBodyValues = false
+  includeBodyValues = false,
+  includeAttachments = false
 ): Promise<EmailRecord[]> {
   if (ids.length === 0) return []
 
@@ -401,7 +577,7 @@ async function getEmailsByIds (
       {
         accountId,
         ids,
-        properties: getEmailProperties(includeBodyValues),
+        properties: getEmailProperties(includeBodyValues, includeAttachments),
         fetchTextBodyValues: includeBodyValues,
         fetchHTMLBodyValues: includeBodyValues,
         fetchAllBodyValues: includeBodyValues
@@ -658,47 +834,64 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'Read Status',
-        name: 'readStatus',
-        type: 'options',
-        default: 'any',
-        options: [
-          { name: 'Any', value: 'any' },
-          { name: 'Read', value: 'read' },
-          { name: 'Unread', value: 'unread' }
-        ],
-        displayOptions: {
-          show: {
-            resource: ['message', 'thread'],
-            operation: ['getMany']
-          }
-        }
-      },
-      {
-        displayName: 'Search',
-        name: 'search',
-        type: 'string',
-        default: '',
-        placeholder: 'subject, sender, text',
-        description: 'Simple full-text search',
+        displayName: 'Fetch Options',
+        name: 'fetchOptions',
+        type: 'collection',
+        placeholder: 'Add Fetch Option',
+        default: {},
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['getMany']
-          }
-        }
-      },
-      {
-        displayName: 'Include Body Values',
-        name: 'includeBodyValues',
-        type: 'boolean',
-        default: false,
-        displayOptions: {
-          show: {
-            resource: ['message', 'draft'],
             operation: ['get', 'getMany']
           }
-        }
+        },
+        options: [
+          {
+            displayName: 'Read Status',
+            name: 'readStatus',
+            type: 'options',
+            default: 'any',
+            options: [
+              { name: 'Any', value: 'any' },
+              { name: 'Read', value: 'read' },
+              { name: 'Unread', value: 'unread' }
+            ]
+          },
+          {
+            displayName: 'Search',
+            name: 'search',
+            type: 'string',
+            default: '',
+            placeholder: 'subject, sender, text',
+            description: 'Simple full-text search'
+          },
+          {
+            displayName: 'Include Body Values',
+            name: 'includeBodyValues',
+            type: 'boolean',
+            default: false
+          },
+          {
+            displayName: 'Download Attachments',
+            name: 'downloadAttachments',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to download message attachments into binary output'
+          },
+          {
+            displayName: 'Attachment Binary Property Prefix',
+            name: 'attachmentBinaryPrefix',
+            type: 'string',
+            default: 'attachment_',
+            description: 'Prefix used for binary property names when downloading attachments'
+          },
+          {
+            displayName: 'Include Message IDs',
+            name: 'includeEmailIds',
+            type: 'boolean',
+            default: false
+          }
+        ]
       },
       {
         displayName: 'From Identity Name or ID',
@@ -725,30 +918,6 @@ export class Fastmail implements INodeType {
         default: '',
         placeholder: 'alice@example.com,bob@example.com',
         description: 'Comma-separated recipient emails',
-        displayOptions: {
-          show: {
-            resource: ['message', 'draft'],
-            operation: ['send', 'create']
-          }
-        }
-      },
-      {
-        displayName: 'Cc',
-        name: 'cc',
-        type: 'string',
-        default: '',
-        displayOptions: {
-          show: {
-            resource: ['message', 'draft'],
-            operation: ['send', 'create']
-          }
-        }
-      },
-      {
-        displayName: 'Bcc',
-        name: 'bcc',
-        type: 'string',
-        default: '',
         displayOptions: {
           show: {
             resource: ['message', 'draft'],
@@ -799,16 +968,45 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'Reply All',
-        name: 'replyAll',
-        type: 'boolean',
-        default: false,
+        displayName: 'Compose Options',
+        name: 'composeOptions',
+        type: 'collection',
+        placeholder: 'Add Compose Option',
+        default: {},
         displayOptions: {
           show: {
-            resource: ['message', 'thread'],
-            operation: ['reply']
+            resource: ['message', 'draft', 'thread'],
+            operation: ['send', 'create', 'reply']
           }
-        }
+        },
+        options: [
+          {
+            displayName: 'Cc',
+            name: 'cc',
+            type: 'string',
+            default: ''
+          },
+          {
+            displayName: 'Bcc',
+            name: 'bcc',
+            type: 'string',
+            default: ''
+          },
+          {
+            displayName: 'Reply All',
+            name: 'replyAll',
+            type: 'boolean',
+            default: false
+          },
+          {
+            displayName: 'Attachment Binary Properties',
+            name: 'attachmentBinaryProperties',
+            type: 'string',
+            default: '',
+            placeholder: 'attachment1,attachment2',
+            description: 'Comma-separated binary property names from the input item to upload as attachments'
+          }
+        ]
       },
       {
         displayName: 'Draft ID',
@@ -833,18 +1031,6 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['thread'],
             operation: ['get', 'delete', 'addLabel', 'removeLabel', 'trash', 'untrash']
-          }
-        }
-      },
-      {
-        displayName: 'Include Message IDs',
-        name: 'includeEmailIds',
-        type: 'boolean',
-        default: false,
-        displayOptions: {
-          show: {
-            resource: ['thread'],
-            operation: ['get', 'getMany']
           }
         }
       },
@@ -936,18 +1122,43 @@ export class Fastmail implements INodeType {
 
         if (resource === 'message') {
           if (operation === 'get') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              includeBodyValues?: boolean
+              downloadAttachments?: boolean
+              attachmentBinaryPrefix?: string
+            }
             const messageId = this.getNodeParameter('messageId', i) as string
-            const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
-            const email = await getEmailById(this, token, session, mailAccountId, messageId, includeBodyValues)
+            const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
+            const downloadAttachments = Boolean(fetchOptions.downloadAttachments ?? false)
+            const attachmentBinaryPrefix = fetchOptions.attachmentBinaryPrefix ?? 'attachment_'
+            const email = await getEmailById(this, token, session, mailAccountId, messageId, includeBodyValues, downloadAttachments)
             if (email == null) {
               returnData.push({ json: { message: 'Message not found', messageId }, pairedItem: { item: i } })
             } else {
-              returnData.push({ json: simplifyEmail(email, includeBodyValues), pairedItem: { item: i } })
+              const outputItem: INodeExecutionData = {
+                json: simplifyEmail(email, includeBodyValues),
+                pairedItem: { item: i }
+              }
+              if (downloadAttachments) {
+                const downloaded = await downloadEmailAttachments(this, token, session, mailAccountId, email, attachmentBinaryPrefix)
+                if (downloaded.attachments.length > 0) {
+                  outputItem.binary = downloaded.binary
+                  outputItem.json.attachments = downloaded.attachments
+                }
+              }
+              returnData.push(outputItem)
             }
             continue
           }
 
           if (operation === 'getMany') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              readStatus?: 'any' | 'read' | 'unread'
+              search?: string
+              includeBodyValues?: boolean
+              downloadAttachments?: boolean
+              attachmentBinaryPrefix?: string
+            }
             const limit = this.getNodeParameter('limit', i, 25)
             const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
             const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
@@ -955,19 +1166,32 @@ export class Fastmail implements INodeType {
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
             }
-            const readStatus = this.getNodeParameter('readStatus', i, 'any') as 'any' | 'read' | 'unread'
-            const search = this.getNodeParameter('search', i, '') as string
-            const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
+            const readStatus = fetchOptions.readStatus ?? 'any'
+            const search = fetchOptions.search ?? ''
+            const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
+            const downloadAttachments = Boolean(fetchOptions.downloadAttachments ?? false)
+            const attachmentBinaryPrefix = fetchOptions.attachmentBinaryPrefix ?? 'attachment_'
 
             const filter = buildEmailQueryFilter(filterLabelId, readStatus, search)
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Email/query', { accountId: mailAccountId, filter, sort: [{ property: 'receivedAt', isAscending: false }], limit }, 'q1']
             ])
             const ids = methodResult<{ ids?: string[] }>(queryResponse, 'Email/query').ids ?? []
-            const emails = await getEmailsByIds(this, token, session, mailAccountId, ids, includeBodyValues)
+            const emails = await getEmailsByIds(this, token, session, mailAccountId, ids, includeBodyValues, downloadAttachments)
 
             for (const email of emails) {
-              returnData.push({ json: simplifyEmail(email, includeBodyValues), pairedItem: { item: i } })
+              const outputItem: INodeExecutionData = {
+                json: simplifyEmail(email, includeBodyValues),
+                pairedItem: { item: i }
+              }
+              if (downloadAttachments) {
+                const downloaded = await downloadEmailAttachments(this, token, session, mailAccountId, email, attachmentBinaryPrefix)
+                if (downloaded.attachments.length > 0) {
+                  outputItem.binary = downloaded.binary
+                  outputItem.json.attachments = downloaded.attachments
+                }
+              }
+              returnData.push(outputItem)
             }
             continue
           }
@@ -1006,15 +1230,22 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'send') {
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
+              cc?: string
+              bcc?: string
+              attachmentBinaryProperties?: string
+            }
             const identityId = this.getNodeParameter('identityId', i) as string
             const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
-            const cc = parseCsvEmails(this.getNodeParameter('cc', i, '') as string)
-            const bcc = parseCsvEmails(this.getNodeParameter('bcc', i, '') as string)
+            const cc = parseCsvEmails(composeOptions.cc ?? '')
+            const bcc = parseCsvEmails(composeOptions.bcc ?? '')
             const subject = this.getNodeParameter('subject', i, '') as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
-            if (!hasBodyContent(textBody, htmlBody)) {
-              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
+            const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
+            if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'Text Body, HTML Body, or at least one attachment is required', { itemIndex: i })
             }
 
             if (to.length === 0) {
@@ -1053,6 +1284,7 @@ export class Fastmail implements INodeType {
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
+            if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
             const sendResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { draft: createEmail } }, 'c1'],
@@ -1089,7 +1321,8 @@ export class Fastmail implements INodeType {
               json: {
                 success: true,
                 sentMessageId: createdId,
-                draftCleanup
+                draftCleanup,
+                uploadedAttachments: uploaded.uploadedAttachments
               },
               pairedItem: { item: i }
             })
@@ -1097,14 +1330,20 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'reply') {
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
+              replyAll?: boolean
+              attachmentBinaryProperties?: string
+            }
             const messageId = this.getNodeParameter('messageId', i) as string
             const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
-            if (!hasBodyContent(textBody, htmlBody)) {
-              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
+            const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
+            if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'Text Body, HTML Body, or at least one attachment is required', { itemIndex: i })
             }
-            const replyAll = this.getNodeParameter('replyAll', i, false) as boolean
+            const replyAll = Boolean(composeOptions.replyAll ?? false)
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
             if (original == null) {
@@ -1157,6 +1396,7 @@ export class Fastmail implements INodeType {
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
+            if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
@@ -1193,7 +1433,8 @@ export class Fastmail implements INodeType {
               json: {
                 success: true,
                 replyMessageId: createdReplyId,
-                draftCleanup
+                draftCleanup,
+                uploadedAttachments: uploaded.uploadedAttachments
               },
               pairedItem: { item: i }
             })
@@ -1289,15 +1530,22 @@ export class Fastmail implements INodeType {
 
         if (resource === 'draft') {
           if (operation === 'create') {
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
+              cc?: string
+              bcc?: string
+              attachmentBinaryProperties?: string
+            }
             const identityId = this.getNodeParameter('identityId', i) as string
             const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
-            const cc = parseCsvEmails(this.getNodeParameter('cc', i, '') as string)
-            const bcc = parseCsvEmails(this.getNodeParameter('bcc', i, '') as string)
+            const cc = parseCsvEmails(composeOptions.cc ?? '')
+            const bcc = parseCsvEmails(composeOptions.bcc ?? '')
             const subject = this.getNodeParameter('subject', i, '') as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
-            if (!hasBodyContent(textBody, htmlBody)) {
-              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
+            const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
+            if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'Text Body, HTML Body, or at least one attachment is required', { itemIndex: i })
             }
 
             const identityResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
@@ -1332,6 +1580,7 @@ export class Fastmail implements INodeType {
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
+            if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Email/set', { accountId: mailAccountId, create: { draft: createEmail } }, 'd1']
@@ -1340,6 +1589,7 @@ export class Fastmail implements INodeType {
             returnData.push({
               json: {
                 success: true,
+                uploadedAttachments: uploaded.uploadedAttachments,
                 draftId: (() => {
                   const emailSetResult = methodResult<JmapSetResult>(response, 'Email/set')
                   const createdId = firstCreatedId(emailSetResult)
@@ -1356,8 +1606,11 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'get') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              includeBodyValues?: boolean
+            }
             const draftId = this.getNodeParameter('draftId', i) as string
-            const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
+            const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
             const draft = await getEmailById(this, token, session, mailAccountId, draftId, includeBodyValues)
             if (draft == null) {
               returnData.push({ json: { message: 'Draft not found', draftId }, pairedItem: { item: i } })
@@ -1368,9 +1621,13 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'getMany') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              includeBodyValues?: boolean
+              search?: string
+            }
             const limit = this.getNodeParameter('limit', i, 25)
-            const includeBodyValues = this.getNodeParameter('includeBodyValues', i, false) as boolean
-            const search = this.getNodeParameter('search', i, '') as string
+            const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
+            const search = fetchOptions.search ?? ''
 
             const filter = buildEmailQueryFilter('', 'any', search, true)
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
@@ -1405,8 +1662,11 @@ export class Fastmail implements INodeType {
 
         if (resource === 'thread') {
           if (operation === 'get') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              includeEmailIds?: boolean
+            }
             const threadId = this.getNodeParameter('threadId', i) as string
-            const includeEmailIds = this.getNodeParameter('includeEmailIds', i, false) as boolean
+            const includeEmailIds = Boolean(fetchOptions.includeEmailIds ?? false)
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Thread/get', { accountId: mailAccountId, ids: [threadId] }, 't1']
             ])
@@ -1425,6 +1685,11 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'getMany') {
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
+              readStatus?: 'any' | 'read' | 'unread'
+              search?: string
+              includeEmailIds?: boolean
+            }
             const limit = this.getNodeParameter('limit', i, 25)
             const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
             const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
@@ -1432,9 +1697,9 @@ export class Fastmail implements INodeType {
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
             }
-            const readStatus = this.getNodeParameter('readStatus', i, 'any') as 'any' | 'read' | 'unread'
-            const search = this.getNodeParameter('search', i, '') as string
-            const includeEmailIds = this.getNodeParameter('includeEmailIds', i, false) as boolean
+            const readStatus = fetchOptions.readStatus ?? 'any'
+            const search = fetchOptions.search ?? ''
+            const includeEmailIds = Boolean(fetchOptions.includeEmailIds ?? false)
             const filter = buildEmailQueryFilter(filterLabelId, readStatus, search)
 
             const queryResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
@@ -1525,13 +1790,19 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'reply') {
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
+              replyAll?: boolean
+              attachmentBinaryProperties?: string
+            }
             const messageId = this.getNodeParameter('replyMessageId', i) as string
             const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
-            const replyAll = this.getNodeParameter('replyAll', i, false) as boolean
-            if (!hasBodyContent(textBody, htmlBody)) {
-              throw new NodeOperationError(this.getNode(), 'Text Body or HTML Body is required', { itemIndex: i })
+            const replyAll = Boolean(composeOptions.replyAll ?? false)
+            const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
+            const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
+            if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'Text Body, HTML Body, or at least one attachment is required', { itemIndex: i })
             }
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
@@ -1585,6 +1856,7 @@ export class Fastmail implements INodeType {
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
+            if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
             const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
               ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
@@ -1621,7 +1893,8 @@ export class Fastmail implements INodeType {
               json: {
                 success: true,
                 replyMessageId: createdId,
-                draftCleanup
+                draftCleanup,
+                uploadedAttachments: uploaded.uploadedAttachments
               },
               pairedItem: { item: i }
             })
