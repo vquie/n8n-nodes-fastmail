@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-fastmail",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "This Fastmail node for n8n is designed to set parameters and execute specific operations for the Fastmail API.",
   "keywords": [
     "n8n-community-node-package"
@@ -28,7 +28,8 @@
   "n8n": {
     "n8nNodesApiVersion": 1,
     "credentials": [
-      "dist/credentials/FastmailApi.credentials.js"
+      "dist/credentials/FastmailApi.credentials.js",
+      "dist/credentials/FastmailOAuth2Api.credentials.js"
     ],
     "nodes": [
       "dist/nodes/fastmail/Fastmail.node.js",

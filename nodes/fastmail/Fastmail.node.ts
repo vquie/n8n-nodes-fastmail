@@ -89,6 +89,10 @@ interface JmapSetResult {
 const JMAP_CORE = 'urn:ietf:params:jmap:core'
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail'
 const JMAP_SUBMISSION = 'urn:ietf:params:jmap:submission'
+const ENABLE_FASTMAIL_OAUTH = false
+const DEFAULT_FASTMAIL_AUTH_MODE = 'apiToken' as const
+
+type FastmailAuthMode = 'apiToken' | 'oAuth2'
 
 async function getSession (node: IExecuteFunctions | ILoadOptionsFunctions, token: string): Promise<SessionResponse> {
   return (await node.helpers.httpRequest({
@@ -174,7 +178,26 @@ function formatAddressList (addresses?: EmailAddress[]): string[] {
   return (addresses ?? []).map((entry) => entry.name ? `${entry.name} <${entry.email}>` : entry.email)
 }
 
-function getTokenFromCredentials (credentials: Record<string, unknown>): string {
+function getCredentialTypeForAuthMode (authentication: FastmailAuthMode): string {
+  return authentication === 'oAuth2' ? 'fastmailOAuth2Api' : 'fastmailApi'
+}
+
+function getAuthModeFromLoadOptions (node: ILoadOptionsFunctions): FastmailAuthMode {
+  if (!ENABLE_FASTMAIL_OAUTH) return DEFAULT_FASTMAIL_AUTH_MODE
+  const mode = node.getCurrentNodeParameter('authentication')
+  return mode === 'oAuth2' ? 'oAuth2' : DEFAULT_FASTMAIL_AUTH_MODE
+}
+
+function getTokenFromCredentials (credentials: Record<string, unknown>, authentication: FastmailAuthMode): string {
+  if (authentication === 'oAuth2') {
+    const oauthTokenData = credentials.oauthTokenData as Record<string, unknown> | undefined
+    const oauthToken = oauthTokenData?.access_token ?? oauthTokenData?.accessToken
+    if (typeof oauthToken === 'string' && oauthToken.trim() !== '') {
+      return oauthToken
+    }
+    throw new Error('Fastmail OAuth access token is missing. Reconnect OAuth credential.')
+  }
+
   const token = credentials.token
   if (typeof token !== 'string' || token.trim() === '') {
     throw new Error('Fastmail API token is missing or invalid in credentials.')
@@ -478,8 +501,8 @@ async function downloadEmailAttachments (
     const contentBuffer = Buffer.isBuffer(rawContent)
       ? rawContent
       : (rawContent instanceof ArrayBuffer)
-        ? Buffer.from(rawContent)
-        : Buffer.from(rawContent, 'binary')
+          ? Buffer.from(rawContent)
+          : Buffer.from(rawContent, 'binary')
 
     binary[binaryProperty] = await node.helpers.prepareBinaryData(contentBuffer, fileName, mimeType)
     downloadedAttachments.push({
@@ -724,12 +747,55 @@ export class Fastmail implements INodeType {
     inputs: ['main'],
     outputs: ['main'],
     credentials: [
-      {
-        name: 'fastmailApi',
-        required: true
-      }
+      ENABLE_FASTMAIL_OAUTH
+        ? {
+            name: 'fastmailApi',
+            required: true,
+            displayOptions: {
+              show: {
+                authentication: ['apiToken']
+              }
+            }
+          }
+        : {
+            name: 'fastmailApi',
+            required: true
+          },
+      ...(ENABLE_FASTMAIL_OAUTH
+        ? [
+            {
+              name: 'fastmailOAuth2Api',
+              required: true,
+              displayOptions: {
+                show: {
+                  authentication: ['oAuth2']
+                }
+              }
+            }
+          ]
+        : [])
     ],
     properties: [
+      ...((ENABLE_FASTMAIL_OAUTH
+        ? [
+            {
+              displayName: 'Authentication',
+              name: 'authentication',
+              type: 'options',
+              options: [
+                {
+                  name: 'API Token',
+                  value: 'apiToken'
+                },
+                {
+                  name: 'OAuth2',
+                  value: 'oAuth2'
+                }
+              ],
+              default: DEFAULT_FASTMAIL_AUTH_MODE
+            }
+          ]
+        : []) as INodeTypeDescription['properties']),
       {
         displayName: 'Resource',
         name: 'resource',
@@ -1156,8 +1222,10 @@ export class Fastmail implements INodeType {
   methods = {
     loadOptions: {
       async getLabels (this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-        const credentials = (await this.getCredentials('fastmailApi'))
-        const token = getTokenFromCredentials(credentials)
+        const authentication = getAuthModeFromLoadOptions(this)
+        const credentialType = getCredentialTypeForAuthMode(authentication)
+        const credentials = (await this.getCredentials(credentialType))
+        const token = getTokenFromCredentials(credentials, authentication)
         const session = await getSession(this, token)
         const accountId = getPrimaryAccountId(session, JMAP_MAIL)
         const mailboxes = await getMailboxes(this, token, session, accountId)
@@ -1174,8 +1242,10 @@ export class Fastmail implements INodeType {
       },
 
       async getIdentities (this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-        const credentials = (await this.getCredentials('fastmailApi'))
-        const token = getTokenFromCredentials(credentials)
+        const authentication = getAuthModeFromLoadOptions(this)
+        const credentialType = getCredentialTypeForAuthMode(authentication)
+        const credentials = (await this.getCredentials(credentialType))
+        const token = getTokenFromCredentials(credentials, authentication)
         const session = await getSession(this, token)
         const accountId = getPrimaryAccountId(session, JMAP_SUBMISSION)
 
@@ -1196,14 +1266,18 @@ export class Fastmail implements INodeType {
 
   async execute (this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData()
-    const credentials = (await this.getCredentials('fastmailApi'))
-    const token = getTokenFromCredentials(credentials)
     const returnData: INodeExecutionData[] = []
 
     for (let i = 0; i < items.length; i++) {
       try {
         const resource = this.getNodeParameter('resource', i)
         const operation = this.getNodeParameter('operation', i)
+        const authentication = (ENABLE_FASTMAIL_OAUTH
+          ? this.getNodeParameter('authentication', i, DEFAULT_FASTMAIL_AUTH_MODE)
+          : DEFAULT_FASTMAIL_AUTH_MODE) as FastmailAuthMode
+        const credentialType = getCredentialTypeForAuthMode(authentication)
+        const credentials = (await this.getCredentials(credentialType))
+        const token = getTokenFromCredentials(credentials, authentication)
 
         const session = await getSession(this, token)
         const mailAccountId = getPrimaryAccountId(session, JMAP_MAIL)

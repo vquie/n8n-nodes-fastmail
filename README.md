@@ -88,6 +88,27 @@ The node fetches available Fastmail data directly for dropdowns:
 
 Use a Fastmail API token with the required scopes for the JMAP methods you call.
 
+### OAuth2 readiness
+
+OAuth2 support is prepared in code and can be enabled with a simple toggle.
+
+- Toggle constant:
+  - `nodes/fastmail/Fastmail.node.ts` -> `ENABLE_FASTMAIL_OAUTH`
+  - `nodes/fastmail/FastmailTrigger.node.ts` -> `ENABLE_FASTMAIL_OAUTH`
+- Current default: `false` (API token mode only)
+- Set to `true` to expose authentication switch (`API Token` / `OAuth2`) in the nodes.
+
+Implemented OAuth2 credential:
+
+- Credential type: `Fastmail OAuth2 API`
+- Authorization URL: `https://www.fastmail.com/oauth/authorize`
+- Token URL: `https://www.fastmail.com/oauth/token`
+- Default scopes: `offline_access urn:ietf:params:jmap:core urn:ietf:params:jmap:mail urn:ietf:params:jmap:submission`
+
+Reference:
+
+- Fastmail Developer OAuth docs: [fastmail.com/dev](https://www.fastmail.com/dev/)
+
 ## Compatibility
 
 Tested with:

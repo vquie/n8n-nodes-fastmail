@@ -51,6 +51,10 @@ type TriggerEventType = 'newEmail' | 'deletedEmail' | 'read' | 'unread' | 'updat
 const JMAP_CORE = 'urn:ietf:params:jmap:core'
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail'
 const MAX_SSE_BUFFER = 2 * 1024 * 1024
+const ENABLE_FASTMAIL_OAUTH = false
+const DEFAULT_FASTMAIL_AUTH_MODE = 'apiToken' as const
+
+type FastmailAuthMode = 'apiToken' | 'oAuth2'
 
 async function getSession (node: ITriggerFunctions | ILoadOptionsFunctions, token: string): Promise<SessionResponse> {
   return (await node.helpers.httpRequest({
@@ -75,7 +79,26 @@ function getPrimaryMailAccountId (session: SessionResponse): string {
   throw new Error(`No account found for capability ${JMAP_MAIL}`)
 }
 
-function getTokenFromCredentials (credentials: Record<string, unknown>): string {
+function getCredentialTypeForAuthMode (authentication: FastmailAuthMode): string {
+  return authentication === 'oAuth2' ? 'fastmailOAuth2Api' : 'fastmailApi'
+}
+
+function getAuthModeFromLoadOptions (node: ILoadOptionsFunctions): FastmailAuthMode {
+  if (!ENABLE_FASTMAIL_OAUTH) return DEFAULT_FASTMAIL_AUTH_MODE
+  const mode = node.getCurrentNodeParameter('authentication')
+  return mode === 'oAuth2' ? 'oAuth2' : DEFAULT_FASTMAIL_AUTH_MODE
+}
+
+function getTokenFromCredentials (credentials: Record<string, unknown>, authentication: FastmailAuthMode): string {
+  if (authentication === 'oAuth2') {
+    const oauthTokenData = credentials.oauthTokenData as Record<string, unknown> | undefined
+    const oauthToken = oauthTokenData?.access_token ?? oauthTokenData?.accessToken
+    if (typeof oauthToken === 'string' && oauthToken.trim() !== '') {
+      return oauthToken
+    }
+    throw new Error('Fastmail OAuth access token is missing. Reconnect OAuth credential.')
+  }
+
   const token = credentials.token
   if (typeof token !== 'string' || token.trim() === '') {
     throw new Error('Fastmail API token is missing or invalid in credentials.')
@@ -201,12 +224,55 @@ export class FastmailTrigger implements INodeType {
     inputs: [],
     outputs: ['main'],
     credentials: [
-      {
-        name: 'fastmailApi',
-        required: true
-      }
+      ENABLE_FASTMAIL_OAUTH
+        ? {
+            name: 'fastmailApi',
+            required: true,
+            displayOptions: {
+              show: {
+                authentication: ['apiToken']
+              }
+            }
+          }
+        : {
+            name: 'fastmailApi',
+            required: true
+          },
+      ...(ENABLE_FASTMAIL_OAUTH
+        ? [
+            {
+              name: 'fastmailOAuth2Api',
+              required: true,
+              displayOptions: {
+                show: {
+                  authentication: ['oAuth2']
+                }
+              }
+            }
+          ]
+        : [])
     ],
     properties: [
+      ...((ENABLE_FASTMAIL_OAUTH
+        ? [
+            {
+              displayName: 'Authentication',
+              name: 'authentication',
+              type: 'options',
+              options: [
+                {
+                  name: 'API Token',
+                  value: 'apiToken'
+                },
+                {
+                  name: 'OAuth2',
+                  value: 'oAuth2'
+                }
+              ],
+              default: DEFAULT_FASTMAIL_AUTH_MODE
+            }
+          ]
+        : []) as INodeTypeDescription['properties']),
       {
         displayName: 'Events',
         name: 'events',
@@ -306,8 +372,10 @@ export class FastmailTrigger implements INodeType {
   methods = {
     loadOptions: {
       async getLabels (this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-        const credentials = await this.getCredentials('fastmailApi')
-        const token = getTokenFromCredentials(credentials)
+        const authentication = getAuthModeFromLoadOptions(this)
+        const credentialType = getCredentialTypeForAuthMode(authentication)
+        const credentials = await this.getCredentials(credentialType)
+        const token = getTokenFromCredentials(credentials, authentication)
         const session = await getSession(this, token)
         const accountId = getPrimaryMailAccountId(session)
         const mailboxes = await getMailboxes(this, token, session, accountId)
@@ -326,8 +394,15 @@ export class FastmailTrigger implements INodeType {
   }
 
   async trigger (this: ITriggerFunctions): Promise<ITriggerResponse> {
-    const credentials = await this.getCredentials('fastmailApi')
-    const token = getTokenFromCredentials(credentials)
+    const authentication = (ENABLE_FASTMAIL_OAUTH
+      ? this.getNodeParameter('authentication', DEFAULT_FASTMAIL_AUTH_MODE)
+      : DEFAULT_FASTMAIL_AUTH_MODE) as FastmailAuthMode
+    const credentialType = getCredentialTypeForAuthMode(authentication)
+    const getCurrentAccessToken = async (): Promise<string> => {
+      const credentials = await this.getCredentials(credentialType)
+      return getTokenFromCredentials(credentials, authentication)
+    }
+    let token = await getCurrentAccessToken()
     const events = (this.getNodeParameter('events', ['newEmail']) as string[]) as TriggerEventType[]
     const selectedEvents = new Set<TriggerEventType>(events)
     const mailboxScope = this.getNodeParameter('mailboxScope', 'all') as 'all' | 'specific'
@@ -637,6 +712,7 @@ export class FastmailTrigger implements INodeType {
       connecting = true
 
       try {
+        token = await getCurrentAccessToken()
         const session = await getSession(this, token)
         const accountId = getPrimaryMailAccountId(session)
         if (Object.keys(mailboxRoleById).length === 0) {
