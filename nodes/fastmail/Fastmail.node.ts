@@ -272,6 +272,89 @@ function parseBinaryPropertyNames (value: string): string[] {
     .filter(Boolean)
 }
 
+function hasNonEmptyText (value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+interface FetchOptions {
+  readStatus?: 'any' | 'read' | 'unread'
+  search?: string
+  includeBodyValues?: boolean
+  downloadAttachments?: boolean
+  attachmentBinaryPrefix?: string
+  includeEmailIds?: boolean
+}
+
+interface ComposeOptions {
+  cc?: string
+  bcc?: string
+  replyAll?: boolean
+  attachmentBinaryProperties?: string
+}
+
+function validateFetchOptions (
+  node: IExecuteFunctions,
+  itemIndex: number,
+  resource: string,
+  operation: string,
+  fetchOptions: FetchOptions
+): void {
+  if (operation === 'get') {
+    if (resource !== 'message' && fetchOptions.downloadAttachments === true) {
+      throw new NodeOperationError(node.getNode(), 'Download Attachments is only supported for Message Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'message' && hasNonEmptyText(fetchOptions.attachmentBinaryPrefix)) {
+      throw new NodeOperationError(node.getNode(), 'Attachment Binary Property Prefix is only supported for Message Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'message' && fetchOptions.includeBodyValues === true && resource !== 'draft') {
+      throw new NodeOperationError(node.getNode(), 'Include Body Values is only supported for Message or Draft Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'thread' && fetchOptions.includeEmailIds === true) {
+      throw new NodeOperationError(node.getNode(), 'Include Message IDs is only supported for Thread Get/Get Many', { itemIndex })
+    }
+    if (hasNonEmptyText(fetchOptions.search) || (fetchOptions.readStatus != null && fetchOptions.readStatus !== 'any')) {
+      throw new NodeOperationError(node.getNode(), 'Search and Read Status are only supported for Get Many operations', { itemIndex })
+    }
+  }
+
+  if (operation === 'getMany') {
+    if (resource !== 'message' && fetchOptions.downloadAttachments === true) {
+      throw new NodeOperationError(node.getNode(), 'Download Attachments is only supported for Message Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'message' && hasNonEmptyText(fetchOptions.attachmentBinaryPrefix)) {
+      throw new NodeOperationError(node.getNode(), 'Attachment Binary Property Prefix is only supported for Message Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'message' && resource !== 'draft' && fetchOptions.includeBodyValues === true) {
+      throw new NodeOperationError(node.getNode(), 'Include Body Values is only supported for Message or Draft Get/Get Many', { itemIndex })
+    }
+    if (resource !== 'thread' && fetchOptions.includeEmailIds === true) {
+      throw new NodeOperationError(node.getNode(), 'Include Message IDs is only supported for Thread Get/Get Many', { itemIndex })
+    }
+  }
+}
+
+function validateComposeOptions (
+  node: IExecuteFunctions,
+  itemIndex: number,
+  resource: string,
+  operation: string,
+  composeOptions: ComposeOptions
+): void {
+  const hasCc = hasNonEmptyText(composeOptions.cc)
+  const hasBcc = hasNonEmptyText(composeOptions.bcc)
+  const replyAll = composeOptions.replyAll === true
+
+  if (!(resource === 'message' || resource === 'draft') && (hasCc || hasBcc)) {
+    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send or Draft Create', { itemIndex })
+  }
+  if (!((resource === 'message' || resource === 'draft') && (operation === 'send' || operation === 'create')) && (hasCc || hasBcc)) {
+    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send or Draft Create', { itemIndex })
+  }
+  if (!(operation === 'reply' && (resource === 'message' || resource === 'thread')) && replyAll) {
+    throw new NodeOperationError(node.getNode(), 'Reply All is only supported for Message Reply or Thread Reply', { itemIndex })
+  }
+}
+
 function resolveJmapUrlTemplate (template: string, values: Record<string, string>): string {
   return template.replace(/\{([^}]+)\}/g, (_match, key: string) => encodeURIComponent(values[key] ?? ''))
 }
@@ -383,14 +466,20 @@ async function downloadEmailAttachments (
       type: mimeType
     })
 
-    const contentBuffer = await node.helpers.httpRequest({
+    const rawContent = await node.helpers.httpRequest({
       method: 'GET',
       url: downloadUrl,
       headers: {
         Authorization: `Bearer ${token}`
       },
       encoding: 'arraybuffer'
-    }) as Buffer
+    }) as Buffer | ArrayBuffer | string
+
+    const contentBuffer = Buffer.isBuffer(rawContent)
+      ? rawContent
+      : (rawContent instanceof ArrayBuffer)
+        ? Buffer.from(rawContent)
+        : Buffer.from(rawContent, 'binary')
 
     binary[binaryProperty] = await node.helpers.prepareBinaryData(contentBuffer, fileName, mimeType)
     downloadedAttachments.push({
@@ -1122,11 +1211,8 @@ export class Fastmail implements INodeType {
 
         if (resource === 'message') {
           if (operation === 'get') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              includeBodyValues?: boolean
-              downloadAttachments?: boolean
-              attachmentBinaryPrefix?: string
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'message', 'get', fetchOptions)
             const messageId = this.getNodeParameter('messageId', i) as string
             const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
             const downloadAttachments = Boolean(fetchOptions.downloadAttachments ?? false)
@@ -1152,16 +1238,14 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'getMany') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              readStatus?: 'any' | 'read' | 'unread'
-              search?: string
-              includeBodyValues?: boolean
-              downloadAttachments?: boolean
-              attachmentBinaryPrefix?: string
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'message', 'getMany', fetchOptions)
             const limit = this.getNodeParameter('limit', i, 25)
             const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
             const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            if (mailboxScope !== 'specific' && selectedLabelId.trim() !== '') {
+              throw new NodeOperationError(this.getNode(), 'Filter by Label is only valid when Mailbox Scope is set to "Specific Mailbox"', { itemIndex: i })
+            }
             const filterLabelId = mailboxScope === 'specific' ? selectedLabelId : ''
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
@@ -1230,11 +1314,8 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'send') {
-            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
-              cc?: string
-              bcc?: string
-              attachmentBinaryProperties?: string
-            }
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
+            validateComposeOptions(this, i, 'message', 'send', composeOptions)
             const identityId = this.getNodeParameter('identityId', i) as string
             const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
             const cc = parseCsvEmails(composeOptions.cc ?? '')
@@ -1330,10 +1411,8 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'reply') {
-            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
-              replyAll?: boolean
-              attachmentBinaryProperties?: string
-            }
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
+            validateComposeOptions(this, i, 'message', 'reply', composeOptions)
             const messageId = this.getNodeParameter('messageId', i) as string
             const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
@@ -1530,11 +1609,8 @@ export class Fastmail implements INodeType {
 
         if (resource === 'draft') {
           if (operation === 'create') {
-            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
-              cc?: string
-              bcc?: string
-              attachmentBinaryProperties?: string
-            }
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
+            validateComposeOptions(this, i, 'draft', 'create', composeOptions)
             const identityId = this.getNodeParameter('identityId', i) as string
             const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
             const cc = parseCsvEmails(composeOptions.cc ?? '')
@@ -1606,9 +1682,8 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'get') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              includeBodyValues?: boolean
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'draft', 'get', fetchOptions)
             const draftId = this.getNodeParameter('draftId', i) as string
             const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
             const draft = await getEmailById(this, token, session, mailAccountId, draftId, includeBodyValues)
@@ -1621,10 +1696,8 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'getMany') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              includeBodyValues?: boolean
-              search?: string
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'draft', 'getMany', fetchOptions)
             const limit = this.getNodeParameter('limit', i, 25)
             const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
             const search = fetchOptions.search ?? ''
@@ -1662,9 +1735,8 @@ export class Fastmail implements INodeType {
 
         if (resource === 'thread') {
           if (operation === 'get') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              includeEmailIds?: boolean
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'thread', 'get', fetchOptions)
             const threadId = this.getNodeParameter('threadId', i) as string
             const includeEmailIds = Boolean(fetchOptions.includeEmailIds ?? false)
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
@@ -1685,14 +1757,14 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'getMany') {
-            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as {
-              readStatus?: 'any' | 'read' | 'unread'
-              search?: string
-              includeEmailIds?: boolean
-            }
+            const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
+            validateFetchOptions(this, i, 'thread', 'getMany', fetchOptions)
             const limit = this.getNodeParameter('limit', i, 25)
             const mailboxScope = this.getNodeParameter('mailboxScope', i, 'all') as 'all' | 'specific'
             const selectedLabelId = this.getNodeParameter('filterLabelId', i, '') as string
+            if (mailboxScope !== 'specific' && selectedLabelId.trim() !== '') {
+              throw new NodeOperationError(this.getNode(), 'Filter by Label is only valid when Mailbox Scope is set to "Specific Mailbox"', { itemIndex: i })
+            }
             const filterLabelId = mailboxScope === 'specific' ? selectedLabelId : ''
             if (mailboxScope === 'specific' && filterLabelId.trim() === '') {
               throw new NodeOperationError(this.getNode(), 'Mailbox is required when "Specific Mailbox" is selected', { itemIndex: i })
@@ -1790,10 +1862,8 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'reply') {
-            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as {
-              replyAll?: boolean
-              attachmentBinaryProperties?: string
-            }
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
+            validateComposeOptions(this, i, 'thread', 'reply', composeOptions)
             const messageId = this.getNodeParameter('replyMessageId', i) as string
             const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
