@@ -26,6 +26,7 @@ interface MailboxRecord {
   id: string
   name?: string
   role?: string
+  parentId?: string | null
 }
 
 interface EmailAddress {
@@ -139,6 +140,40 @@ function buildEventSourceUrl (
     .replace(/\{ping\}/g, encodeURIComponent(String(ping)))
 }
 
+function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
+  const byId = new Map(mailboxes.map((mailbox) => [mailbox.id, mailbox]))
+  const cache = new Map<string, string>()
+
+  const resolvePath = (mailboxId: string, visiting: Set<string>): string => {
+    const cached = cache.get(mailboxId)
+    if (cached != null) return cached
+
+    const mailbox = byId.get(mailboxId)
+    if (mailbox == null) return mailboxId
+
+    const ownName = mailbox.name?.trim() || mailbox.id
+    const parentId = mailbox.parentId ?? ''
+    if (parentId === '' || !byId.has(parentId) || visiting.has(mailboxId)) {
+      cache.set(mailboxId, ownName)
+      return ownName
+    }
+
+    visiting.add(mailboxId)
+    const parentPath = resolvePath(parentId, visiting)
+    visiting.delete(mailboxId)
+
+    const fullPath = `${parentPath} / ${ownName}`
+    cache.set(mailboxId, fullPath)
+    return fullPath
+  }
+
+  for (const mailbox of mailboxes) {
+    resolvePath(mailbox.id, new Set<string>())
+  }
+
+  return cache
+}
+
 async function getMailboxes (
   node: ITriggerFunctions | ILoadOptionsFunctions,
   token: string,
@@ -146,7 +181,7 @@ async function getMailboxes (
   accountId: string
 ): Promise<MailboxRecord[]> {
   const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
-    ['Mailbox/get', { accountId, ids: null, properties: ['id', 'name', 'role'] }, 'm1']
+    ['Mailbox/get', { accountId, ids: null, properties: ['id', 'name', 'role', 'parentId'] }, 'm1']
   ])
 
   return methodResult<{ list?: MailboxRecord[] }>(response, 'Mailbox/get').list ?? []
@@ -276,11 +311,14 @@ export class FastmailTrigger implements INodeType {
         const session = await getSession(this, token)
         const accountId = getPrimaryMailAccountId(session)
         const mailboxes = await getMailboxes(this, token, session, accountId)
+        const mailboxPathMap = buildMailboxPathMap(mailboxes)
 
         return mailboxes
           .filter((mailbox) => mailbox.id)
           .map((mailbox) => ({
-            name: mailbox.role ? `${mailbox.name ?? mailbox.id} (${mailbox.role})` : (mailbox.name ?? mailbox.id),
+            name: mailbox.role
+              ? `${mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id} (${mailbox.role})`
+              : (mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id),
             value: mailbox.id
           }))
       }

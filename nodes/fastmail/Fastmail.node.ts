@@ -27,6 +27,7 @@ interface MailboxRecord {
   name?: string
   role?: string
   isSubscribed?: boolean
+  parentId?: string | null
 }
 
 interface IdentityRecord {
@@ -301,6 +302,40 @@ function summarizeThread (thread: ThreadRecord, emailMap: Map<string, EmailRecor
   return summary
 }
 
+function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
+  const byId = new Map(mailboxes.map((mailbox) => [mailbox.id, mailbox]))
+  const cache = new Map<string, string>()
+
+  const resolvePath = (mailboxId: string, visiting: Set<string>): string => {
+    const cached = cache.get(mailboxId)
+    if (cached != null) return cached
+
+    const mailbox = byId.get(mailboxId)
+    if (mailbox == null) return mailboxId
+
+    const ownName = mailbox.name?.trim() || mailbox.id
+    const parentId = mailbox.parentId ?? ''
+    if (parentId === '' || !byId.has(parentId) || visiting.has(mailboxId)) {
+      cache.set(mailboxId, ownName)
+      return ownName
+    }
+
+    visiting.add(mailboxId)
+    const parentPath = resolvePath(parentId, visiting)
+    visiting.delete(mailboxId)
+
+    const fullPath = `${parentPath} / ${ownName}`
+    cache.set(mailboxId, fullPath)
+    return fullPath
+  }
+
+  for (const mailbox of mailboxes) {
+    resolvePath(mailbox.id, new Set<string>())
+  }
+
+  return cache
+}
+
 async function getMailboxes (
   node: IExecuteFunctions | ILoadOptionsFunctions,
   token: string,
@@ -308,7 +343,7 @@ async function getMailboxes (
   accountId: string
 ): Promise<MailboxRecord[]> {
   const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
-    ['Mailbox/get', { accountId, ids: null, properties: ['id', 'name', 'role', 'isSubscribed'] }, 'm1']
+    ['Mailbox/get', { accountId, ids: null, properties: ['id', 'name', 'role', 'isSubscribed', 'parentId'] }, 'm1']
   ])
   return methodResult<{ list?: MailboxRecord[] }>(response, 'Mailbox/get').list ?? []
 }
@@ -539,7 +574,7 @@ export class Fastmail implements INodeType {
       },
       {
         displayName: 'Label Name or ID',
-        name: 'labelId',
+        name: 'labelIdForMessageOrThread',
         type: 'options',
         typeOptions: {
           loadOptionsMethod: 'getLabels'
@@ -549,8 +584,25 @@ export class Fastmail implements INodeType {
         required: true,
         displayOptions: {
           show: {
-            resource: ['message', 'thread', 'label'],
-            operation: ['addLabel', 'removeLabel', 'get', 'delete']
+            resource: ['message', 'thread'],
+            operation: ['addLabel', 'removeLabel']
+          }
+        }
+      },
+      {
+        displayName: 'Label Name or ID',
+        name: 'labelIdForLabelResource',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getLabels'
+        },
+        description: 'Choose from the list, or set an ID with an expression. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+        default: '',
+        required: true,
+        displayOptions: {
+          show: {
+            resource: ['label'],
+            operation: ['get', 'delete']
           }
         }
       },
@@ -834,11 +886,14 @@ export class Fastmail implements INodeType {
         const session = await getSession(this, token)
         const accountId = getPrimaryAccountId(session, JMAP_MAIL)
         const mailboxes = await getMailboxes(this, token, session, accountId)
+        const mailboxPathMap = buildMailboxPathMap(mailboxes)
 
         return mailboxes
           .filter((mailbox) => mailbox.id)
           .map((mailbox) => ({
-            name: mailbox.role ? `${mailbox.name ?? mailbox.id} (${mailbox.role})` : (mailbox.name ?? mailbox.id),
+            name: mailbox.role
+              ? `${mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id} (${mailbox.role})`
+              : (mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id),
             value: mailbox.id
           }))
       },
@@ -924,11 +979,11 @@ export class Fastmail implements INodeType {
             if (operation === 'markRead') update['keywords/$seen'] = true
             if (operation === 'markUnread') update['keywords/$seen'] = false
             if (operation === 'addLabel') {
-              const labelId = this.getNodeParameter('labelId', i) as string
+              const labelId = this.getNodeParameter('labelIdForMessageOrThread', i) as string
               update[`mailboxIds/${labelId}`] = true
             }
             if (operation === 'removeLabel') {
-              const labelId = this.getNodeParameter('labelId', i) as string
+              const labelId = this.getNodeParameter('labelIdForMessageOrThread', i) as string
               update[`mailboxIds/${labelId}`] = null
             }
 
@@ -1149,11 +1204,14 @@ export class Fastmail implements INodeType {
         if (resource === 'label') {
           if (operation === 'getMany') {
             const mailboxes = await getMailboxes(this, token, session, mailAccountId)
+            const mailboxPathMap = buildMailboxPathMap(mailboxes)
             for (const mailbox of mailboxes) {
               returnData.push({
                 json: {
                   id: mailbox.id,
                   name: mailbox.name ?? mailbox.id,
+                  path: mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id,
+                  parentId: mailbox.parentId ?? null,
                   role: mailbox.role ?? null,
                   isSubscribed: mailbox.isSubscribed ?? null
                 },
@@ -1164,18 +1222,22 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'get') {
-            const labelId = this.getNodeParameter('labelId', i) as string
+            const labelId = this.getNodeParameter('labelIdForLabelResource', i) as string
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-              ['Mailbox/get', { accountId: mailAccountId, ids: [labelId] }, 'm1']
+              ['Mailbox/get', { accountId: mailAccountId, ids: [labelId], properties: ['id', 'name', 'role', 'isSubscribed', 'parentId'] }, 'm1']
             ])
             const mailbox = methodResult<{ list?: MailboxRecord[] }>(response, 'Mailbox/get').list?.[0]
             if (mailbox == null) {
               returnData.push({ json: { message: 'Label not found', labelId }, pairedItem: { item: i } })
             } else {
+              const allMailboxes = await getMailboxes(this, token, session, mailAccountId)
+              const mailboxPathMap = buildMailboxPathMap(allMailboxes)
               returnData.push({
                 json: {
                   id: mailbox.id,
                   name: mailbox.name ?? mailbox.id,
+                  path: mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id,
+                  parentId: mailbox.parentId ?? null,
                   role: mailbox.role ?? null,
                   isSubscribed: mailbox.isSubscribed ?? null
                 },
@@ -1208,7 +1270,7 @@ export class Fastmail implements INodeType {
           }
 
           if (operation === 'delete') {
-            const labelId = this.getNodeParameter('labelId', i) as string
+            const labelId = this.getNodeParameter('labelIdForLabelResource', i) as string
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Mailbox/set', { accountId: mailAccountId, destroy: [labelId] }, 'm1']
             ])
@@ -1427,7 +1489,7 @@ export class Fastmail implements INodeType {
 
             let targetLabelId = ''
             if (operation === 'addLabel' || operation === 'removeLabel') {
-              targetLabelId = this.getNodeParameter('labelId', i) as string
+              targetLabelId = this.getNodeParameter('labelIdForMessageOrThread', i) as string
             }
             if (operation === 'trash' || operation === 'untrash') {
               const trashMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'trash')
