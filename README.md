@@ -27,6 +27,7 @@ This package provides:
 - Get many messages
 - Mark a message as read
 - Mark a message as unread
+- Move a message
 - Remove label from message
 - Reply to a message
 - Send a message

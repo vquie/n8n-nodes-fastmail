@@ -885,6 +885,7 @@ export class Fastmail implements INodeType {
           { name: 'Get Many Messages', value: 'getMany', action: 'Get many messages' },
           { name: 'Mark a Message as Read', value: 'markRead', action: 'Mark a message as read' },
           { name: 'Mark a Message as Unread', value: 'markUnread', action: 'Mark a message as unread' },
+          { name: 'Move a Message', value: 'move', action: 'Move a message to another label' },
           { name: 'Remove Label From Message', value: 'removeLabel', action: 'Remove a label from a message' },
           { name: 'Reply to a Message', value: 'reply', action: 'Reply to a message' },
           { name: 'Send a Message', value: 'send', action: 'Send a message' }
@@ -957,7 +958,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message'],
-            operation: ['get', 'delete', 'markRead', 'markUnread', 'addLabel', 'removeLabel', 'reply']
+            operation: ['get', 'delete', 'markRead', 'markUnread', 'addLabel', 'removeLabel', 'move', 'reply']
           }
         }
       },
@@ -975,6 +976,40 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['message', 'thread'],
             operation: ['addLabel', 'removeLabel']
+          }
+        }
+      },
+      {
+        displayName: 'Source Label Name or ID',
+        name: 'sourceLabelIdForMove',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getLabels'
+        },
+        description: 'Mailbox to remove from the message during the move.',
+        default: '',
+        required: true,
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['move']
+          }
+        }
+      },
+      {
+        displayName: 'Target Label Name or ID',
+        name: 'targetLabelIdForMove',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getLabels'
+        },
+        description: 'Mailbox to add to the message during the move.',
+        default: '',
+        required: true,
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['move']
           }
         }
       },
@@ -1455,7 +1490,7 @@ export class Fastmail implements INodeType {
             continue
           }
 
-          if (operation === 'delete' || operation === 'markRead' || operation === 'markUnread' || operation === 'addLabel' || operation === 'removeLabel') {
+          if (operation === 'delete' || operation === 'markRead' || operation === 'markUnread' || operation === 'addLabel' || operation === 'removeLabel' || operation === 'move') {
             const messageId = this.getNodeParameter('messageId', i) as string
             const update: JsonObject = {}
 
@@ -1468,6 +1503,15 @@ export class Fastmail implements INodeType {
             if (operation === 'removeLabel') {
               const labelId = this.getNodeParameter('labelIdForMessageOrThread', i) as string
               update[`mailboxIds/${labelId}`] = null
+            }
+            if (operation === 'move') {
+              const sourceLabelId = this.getNodeParameter('sourceLabelIdForMove', i) as string
+              const targetLabelId = this.getNodeParameter('targetLabelIdForMove', i) as string
+              if (sourceLabelId === targetLabelId) {
+                throw new NodeOperationError(this.getNode(), 'Source Label and Target Label must be different', { itemIndex: i })
+              }
+              update[`mailboxIds/${sourceLabelId}`] = null
+              update[`mailboxIds/${targetLabelId}`] = true
             }
 
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
@@ -1484,6 +1528,12 @@ export class Fastmail implements INodeType {
               json: {
                 action: operation,
                 messageId,
+                ...(operation === 'move'
+                  ? {
+                      sourceLabelId: this.getNodeParameter('sourceLabelIdForMove', i) as string,
+                      targetLabelId: this.getNodeParameter('targetLabelIdForMove', i) as string
+                    }
+                  : {}),
                 successful: operation === 'delete' ? (result.destroyed ?? []).includes(messageId) : Object.keys(result.updated ?? {}).includes(messageId)
               },
               pairedItem: { item: i }
