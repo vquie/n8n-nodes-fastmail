@@ -312,6 +312,7 @@ interface ComposeOptions {
   cc?: string
   bcc?: string
   replyAll?: boolean
+  createAsDraft?: boolean
   attachmentBinaryProperties?: string
 }
 
@@ -366,6 +367,7 @@ function validateComposeOptions (
   const hasCc = hasNonEmptyText(composeOptions.cc)
   const hasBcc = hasNonEmptyText(composeOptions.bcc)
   const replyAll = composeOptions.replyAll === true
+  const createAsDraft = composeOptions.createAsDraft === true
 
   if (!(resource === 'message' || resource === 'draft') && (hasCc || hasBcc)) {
     throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send or Draft Create', { itemIndex })
@@ -375,6 +377,9 @@ function validateComposeOptions (
   }
   if (!(operation === 'reply' && (resource === 'message' || resource === 'thread')) && replyAll) {
     throw new NodeOperationError(node.getNode(), 'Reply All is only supported for Message Reply or Thread Reply', { itemIndex })
+  }
+  if (!(operation === 'reply' && (resource === 'message' || resource === 'thread')) && createAsDraft) {
+    throw new NodeOperationError(node.getNode(), 'Create as Draft is only supported for Message Reply or Thread Reply', { itemIndex })
   }
 }
 
@@ -1154,6 +1159,13 @@ export class Fastmail implements INodeType {
             default: false
           },
           {
+            displayName: 'Create as Draft',
+            name: 'createAsDraft',
+            type: 'boolean',
+            default: false,
+            description: 'Create the reply as a draft instead of sending it immediately'
+          },
+          {
             displayName: 'Attachment Binary Properties',
             name: 'attachmentBinaryProperties',
             type: 'string',
@@ -1497,6 +1509,7 @@ export class Fastmail implements INodeType {
               throw new NodeOperationError(this.getNode(), 'Text Body, HTML Body, or at least one attachment is required', { itemIndex: i })
             }
             const replyAll = Boolean(composeOptions.replyAll ?? false)
+            const createAsDraft = Boolean(composeOptions.createAsDraft ?? false)
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
             if (original == null) {
@@ -1551,17 +1564,25 @@ export class Fastmail implements INodeType {
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
             if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
-            const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
-              ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
-              [
-                'EmailSubmission/set',
-                {
-                  accountId: submissionAccountId,
-                  create: { submit: { identityId, emailId: '#replyDraft' } }
-                },
-                's1'
-              ]
-            ])
+            const replyResponse = await callJmap(
+              this,
+              token,
+              session,
+              createAsDraft ? [JMAP_CORE, JMAP_MAIL] : [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION],
+              createAsDraft
+                ? [['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1']]
+                : [
+                    ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
+                    [
+                      'EmailSubmission/set',
+                      {
+                        accountId: submissionAccountId,
+                        create: { submit: { identityId, emailId: '#replyDraft' } }
+                      },
+                      's1'
+                    ]
+                  ]
+            )
 
             const emailSetResult = methodResultByCallId<JmapSetResult>(replyResponse, 'c1', 'Email/set')
             const createdReplyId = firstCreatedId(emailSetResult)
@@ -1569,28 +1590,41 @@ export class Fastmail implements INodeType {
               const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
               throw new NodeOperationError(this.getNode(), `Reply could not be created. notCreated: ${notCreated}`, { itemIndex: i })
             }
-            const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
-            if (firstCreatedId(submissionResult) == null) {
-              const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
-              throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
-            }
+            if (createAsDraft) {
+              returnData.push({
+                json: {
+                  success: true,
+                  draftId: createdReplyId,
+                  submitted: false,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                },
+                pairedItem: { item: i }
+              })
+            } else {
+              const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
+              if (firstCreatedId(submissionResult) == null) {
+                const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
+                throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
+              }
 
-            let draftCleanup: { success: boolean, error?: string } = { success: true }
-            try {
-              await destroyEmailById(this, token, session, mailAccountId, createdReplyId)
-            } catch (error) {
-              draftCleanup = { success: false, error: (error as Error).message }
-            }
+              let draftCleanup: { success: boolean, error?: string } = { success: true }
+              try {
+                await destroyEmailById(this, token, session, mailAccountId, createdReplyId)
+              } catch (error) {
+                draftCleanup = { success: false, error: (error as Error).message }
+              }
 
-            returnData.push({
-              json: {
-                success: true,
-                replyMessageId: createdReplyId,
-                draftCleanup,
-                uploadedAttachments: uploaded.uploadedAttachments
-              },
-              pairedItem: { item: i }
-            })
+              returnData.push({
+                json: {
+                  success: true,
+                  replyMessageId: createdReplyId,
+                  submitted: true,
+                  draftCleanup,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                },
+                pairedItem: { item: i }
+              })
+            }
             continue
           }
         }
@@ -1943,6 +1977,7 @@ export class Fastmail implements INodeType {
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
             const replyAll = Boolean(composeOptions.replyAll ?? false)
+            const createAsDraft = Boolean(composeOptions.createAsDraft ?? false)
             const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
             const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
             if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
@@ -2002,17 +2037,25 @@ export class Fastmail implements INodeType {
             if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
             if (uploaded.emailAttachments.length > 0) createEmail.attachments = uploaded.emailAttachments
 
-            const replyResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION], [
-              ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
-              [
-                'EmailSubmission/set',
-                {
-                  accountId: submissionAccountId,
-                  create: { submit: { identityId, emailId: '#replyDraft' } }
-                },
-                's1'
-              ]
-            ])
+            const replyResponse = await callJmap(
+              this,
+              token,
+              session,
+              createAsDraft ? [JMAP_CORE, JMAP_MAIL] : [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION],
+              createAsDraft
+                ? [['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1']]
+                : [
+                    ['Email/set', { accountId: mailAccountId, create: { replyDraft: createEmail } }, 'c1'],
+                    [
+                      'EmailSubmission/set',
+                      {
+                        accountId: submissionAccountId,
+                        create: { submit: { identityId, emailId: '#replyDraft' } }
+                      },
+                      's1'
+                    ]
+                  ]
+            )
 
             const emailSetResult = methodResultByCallId<JmapSetResult>(replyResponse, 'c1', 'Email/set')
             const createdId = firstCreatedId(emailSetResult)
@@ -2020,28 +2063,41 @@ export class Fastmail implements INodeType {
               const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
               throw new NodeOperationError(this.getNode(), `Reply could not be created. notCreated: ${notCreated}`, { itemIndex: i })
             }
-            const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
-            if (firstCreatedId(submissionResult) == null) {
-              const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
-              throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
-            }
+            if (createAsDraft) {
+              returnData.push({
+                json: {
+                  success: true,
+                  draftId: createdId,
+                  submitted: false,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                },
+                pairedItem: { item: i }
+              })
+            } else {
+              const submissionResult = methodResultByCallId<JmapSetResult>(replyResponse, 's1', 'EmailSubmission/set')
+              if (firstCreatedId(submissionResult) == null) {
+                const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
+                throw new NodeOperationError(this.getNode(), `Reply submission failed. notCreated: ${notCreated}`, { itemIndex: i })
+              }
 
-            let draftCleanup: { success: boolean, error?: string } = { success: true }
-            try {
-              await destroyEmailById(this, token, session, mailAccountId, createdId)
-            } catch (error) {
-              draftCleanup = { success: false, error: (error as Error).message }
-            }
+              let draftCleanup: { success: boolean, error?: string } = { success: true }
+              try {
+                await destroyEmailById(this, token, session, mailAccountId, createdId)
+              } catch (error) {
+                draftCleanup = { success: false, error: (error as Error).message }
+              }
 
-            returnData.push({
-              json: {
-                success: true,
-                replyMessageId: createdId,
-                draftCleanup,
-                uploadedAttachments: uploaded.uploadedAttachments
-              },
-              pairedItem: { item: i }
-            })
+              returnData.push({
+                json: {
+                  success: true,
+                  replyMessageId: createdId,
+                  submitted: true,
+                  draftCleanup,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                },
+                pairedItem: { item: i }
+              })
+            }
             continue
           }
         }
