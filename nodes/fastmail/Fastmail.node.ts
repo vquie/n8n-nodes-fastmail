@@ -1592,7 +1592,6 @@ export class Fastmail implements INodeType {
             const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
             validateComposeOptions(this, i, 'message', 'reply', composeOptions)
             const messageId = this.getNodeParameter('messageId', i) as string
-            const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
             const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
@@ -1611,7 +1610,7 @@ export class Fastmail implements INodeType {
 
             const identity = replyIdentityMode === 'matchOriginalRecipient'
               ? findReplyIdentity(await getIdentities(this, token, session, submissionAccountId), original)
-              : (await getIdentities(this, token, session, submissionAccountId, [identityId]))[0] ?? null
+              : (await getIdentities(this, token, session, submissionAccountId, [this.getNodeParameter('identityId', i) as string]))[0] ?? null
             if (identity == null) {
               throw new NodeOperationError(
                 this.getNode(),
@@ -2071,7 +2070,6 @@ export class Fastmail implements INodeType {
             const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
             validateComposeOptions(this, i, 'thread', 'reply', composeOptions)
             const messageId = this.getNodeParameter('replyMessageId', i) as string
-            const identityId = this.getNodeParameter('identityId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
             const replyAll = Boolean(composeOptions.replyAll ?? false)
@@ -2090,7 +2088,7 @@ export class Fastmail implements INodeType {
 
             const identity = replyIdentityMode === 'matchOriginalRecipient'
               ? findReplyIdentity(await getIdentities(this, token, session, submissionAccountId), original)
-              : (await getIdentities(this, token, session, submissionAccountId, [identityId]))[0] ?? null
+              : (await getIdentities(this, token, session, submissionAccountId, [this.getNodeParameter('identityId', i) as string]))[0] ?? null
             if (identity == null) {
               throw new NodeOperationError(
                 this.getNode(),
