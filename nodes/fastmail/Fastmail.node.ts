@@ -639,6 +639,59 @@ async function getMailboxes (
   return methodResult<{ list?: MailboxRecord[] }>(response, 'Mailbox/get').list ?? []
 }
 
+async function getIdentities (
+  node: IExecuteFunctions | ILoadOptionsFunctions,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  ids: string[] | null = null
+): Promise<IdentityRecord[]> {
+  const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
+    ['Identity/get', { accountId, ids, properties: ['id', 'email', 'name'] }, 'i1']
+  ])
+
+  return methodResult<{ list?: IdentityRecord[] }>(response, 'Identity/get').list ?? []
+}
+
+function findReplyIdentity (
+  identities: IdentityRecord[],
+  original: EmailRecord
+): IdentityRecord | null {
+  const recipients = [...(original.to ?? []), ...(original.cc ?? [])]
+  const recipientEmails = new Set(
+    recipients
+      .map((entry) => entry.email.trim().toLowerCase())
+      .filter((email) => email !== '')
+  )
+
+  const matchedIdentity = identities.find((identity) => recipientEmails.has(identity.email.trim().toLowerCase()))
+  if (matchedIdentity != null) {
+    return matchedIdentity
+  }
+  return null
+}
+
+function assertEmailSetUpdated (
+  node: IExecuteFunctions,
+  itemIndex: number,
+  action: string,
+  requestedIds: string[],
+  result: JmapSetResult
+): string[] {
+  const updatedIds = Object.keys(result.updated ?? {})
+  const notUpdated = result.notUpdated ?? {}
+
+  if (Object.keys(notUpdated).length > 0 || updatedIds.length !== requestedIds.length) {
+    throw new NodeOperationError(
+      node.getNode(),
+      `${action} failed. updated=${updatedIds.length}/${requestedIds.length}. notUpdated: ${JSON.stringify(notUpdated)}`,
+      { itemIndex }
+    )
+  }
+
+  return updatedIds
+}
+
 async function getMailboxIdByRole (
   node: IExecuteFunctions,
   token: string,
@@ -1054,6 +1107,29 @@ export class Fastmail implements INodeType {
         ]
       },
       {
+        displayName: 'Reply Sender',
+        name: 'replyIdentityMode',
+        type: 'options',
+        default: 'selectedIdentity',
+        options: [
+          {
+            name: 'Use Selected Identity',
+            value: 'selectedIdentity'
+          },
+          {
+            name: 'Match Original Recipient',
+            value: 'matchOriginalRecipient'
+          }
+        ],
+        description: 'Choose whether replies use the selected identity or the Fastmail identity that originally received the message',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['reply']
+          }
+        }
+      },
+      {
         displayName: 'From Identity Name or ID',
         name: 'identityId',
         type: 'options',
@@ -1066,7 +1142,25 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'reply', 'create']
+            operation: ['send', 'create']
+          }
+        }
+      },
+      {
+        displayName: 'From Identity Name or ID',
+        name: 'identityId',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getIdentities'
+        },
+        description: 'Choose from the list, or set an ID with an expression. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+        required: true,
+        default: '',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['reply'],
+            replyIdentityMode: ['selectedIdentity']
           }
         }
       },
@@ -1260,12 +1354,7 @@ export class Fastmail implements INodeType {
         const token = getTokenFromCredentials(credentials, authentication)
         const session = await getSession(this, token)
         const accountId = getPrimaryAccountId(session, JMAP_SUBMISSION)
-
-        const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
-          ['Identity/get', { accountId, ids: null, properties: ['id', 'email', 'name'] }, 'i1']
-        ])
-
-        const identities = methodResult<{ list?: IdentityRecord[] }>(response, 'Identity/get').list ?? []
+        const identities = await getIdentities(this, token, session, accountId)
         return identities
           .filter((identity) => identity.id)
           .map((identity) => ({
@@ -1388,6 +1477,9 @@ export class Fastmail implements INodeType {
             ])
 
             const result = methodResult<JmapSetResult>(response, 'Email/set')
+            if (operation !== 'delete') {
+              assertEmailSetUpdated(this, i, `Message ${operation}`, [messageId], result)
+            }
             returnData.push({
               json: {
                 action: operation,
@@ -1510,18 +1602,24 @@ export class Fastmail implements INodeType {
             }
             const replyAll = Boolean(composeOptions.replyAll ?? false)
             const createAsDraft = Boolean(composeOptions.createAsDraft ?? false)
+            const replyIdentityMode = this.getNodeParameter('replyIdentityMode', i, 'selectedIdentity') as string
 
             const original = await getEmailById(this, token, session, mailAccountId, messageId)
             if (original == null) {
               throw new NodeOperationError(this.getNode(), 'Original message not found', { itemIndex: i })
             }
 
-            const identityResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
-              ['Identity/get', { accountId: submissionAccountId, ids: [identityId] }, 'i1']
-            ])
-            const identity = methodResult<{ list?: IdentityRecord[] }>(identityResponse, 'Identity/get').list?.[0]
+            const identity = replyIdentityMode === 'matchOriginalRecipient'
+              ? findReplyIdentity(await getIdentities(this, token, session, submissionAccountId), original)
+              : (await getIdentities(this, token, session, submissionAccountId, [identityId]))[0] ?? null
             if (identity == null) {
-              throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
+              throw new NodeOperationError(
+                this.getNode(),
+                replyIdentityMode === 'matchOriginalRecipient'
+                  ? 'No Fastmail identity matched the original message recipients'
+                  : 'Selected identity was not found',
+                { itemIndex: i }
+              )
             }
             const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
             if (draftMailboxId == null) {
@@ -1577,7 +1675,7 @@ export class Fastmail implements INodeType {
                       'EmailSubmission/set',
                       {
                         accountId: submissionAccountId,
-                        create: { submit: { identityId, emailId: '#replyDraft' } }
+                        create: { submit: { identityId: identity.id, emailId: '#replyDraft' } }
                       },
                       's1'
                     ]
@@ -1954,7 +2052,7 @@ export class Fastmail implements INodeType {
               ['Email/set', { accountId: mailAccountId, update }, 's1']
             ])
             const result = methodResult<JmapSetResult>(response, 'Email/set')
-            const updatedIds = Object.keys(result.updated ?? {})
+            const updatedIds = assertEmailSetUpdated(this, i, `Thread ${operation}`, threadEmailIds, result)
 
             returnData.push({
               json: {
@@ -1962,7 +2060,7 @@ export class Fastmail implements INodeType {
                 threadId,
                 requested: threadEmailIds.length,
                 successful: updatedIds.length,
-                failed: Object.keys(result.notUpdated ?? {}).length
+                failed: 0
               },
               pairedItem: { item: i }
             })
@@ -1978,6 +2076,7 @@ export class Fastmail implements INodeType {
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
             const replyAll = Boolean(composeOptions.replyAll ?? false)
             const createAsDraft = Boolean(composeOptions.createAsDraft ?? false)
+            const replyIdentityMode = this.getNodeParameter('replyIdentityMode', i, 'selectedIdentity') as string
             const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
             const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
             if (!hasBodyContent(textBody, htmlBody) && uploaded.emailAttachments.length === 0) {
@@ -1989,12 +2088,17 @@ export class Fastmail implements INodeType {
               throw new NodeOperationError(this.getNode(), 'Original message not found', { itemIndex: i })
             }
 
-            const identityResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
-              ['Identity/get', { accountId: submissionAccountId, ids: [identityId] }, 'i1']
-            ])
-            const identity = methodResult<{ list?: IdentityRecord[] }>(identityResponse, 'Identity/get').list?.[0]
+            const identity = replyIdentityMode === 'matchOriginalRecipient'
+              ? findReplyIdentity(await getIdentities(this, token, session, submissionAccountId), original)
+              : (await getIdentities(this, token, session, submissionAccountId, [identityId]))[0] ?? null
             if (identity == null) {
-              throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
+              throw new NodeOperationError(
+                this.getNode(),
+                replyIdentityMode === 'matchOriginalRecipient'
+                  ? 'No Fastmail identity matched the original message recipients'
+                  : 'Selected identity was not found',
+                { itemIndex: i }
+              )
             }
             const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
             if (draftMailboxId == null) {
@@ -2050,7 +2154,7 @@ export class Fastmail implements INodeType {
                       'EmailSubmission/set',
                       {
                         accountId: submissionAccountId,
-                        create: { submit: { identityId, emailId: '#replyDraft' } }
+                        create: { submit: { identityId: identity.id, emailId: '#replyDraft' } }
                       },
                       's1'
                     ]
