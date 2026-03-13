@@ -20,7 +20,9 @@
     "format": "prettier nodes credentials --write",
     "lint": "eslint nodes credentials package.json",
     "lintfix": "eslint nodes credentials package.json --fix",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "release:version": "node -e \"const fs=require('fs'); const pkg=require('./package.json'); const version=process.argv[1]; if(!version){console.error('Usage: npm run release:version -- <version>'); process.exit(1);} pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\\n'); console.log('Updated package.json to', version);\"",
+    "release:tag": "node -e \"const {execFileSync}=require('child_process'); const version=require('./package.json').version; const tag=`v${version}`; execFileSync('git',['add','package.json'],{stdio:'inherit'}); execFileSync('git',['commit','-m',`release: ${tag}`],{stdio:'inherit'}); execFileSync('git',['tag',tag],{stdio:'inherit'}); execFileSync('git',['push','origin'],{stdio:'inherit'}); execFileSync('git',['push','origin',tag],{stdio:'inherit'}); console.log('Pushed', tag);\""
   },
   "files": [
     "dist"
