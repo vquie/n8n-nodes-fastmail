@@ -1,18 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:best-practices"
-  ],
+  "extends": ["config:best-practices"],
   "semanticCommits": "enabled",
-  "ignorePresets": [
-    "docker:pinDigests",
-    ":pinDevDependencies"
-  ],
+  "ignorePresets": ["docker:pinDigests", ":pinDevDependencies"],
   "packageRules": [
     {
-      "extends": [
-        "packages:linters"
-      ],
+      "extends": ["packages:linters"],
       "groupName": "linters"
     }
   ]
