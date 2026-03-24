@@ -1576,14 +1576,16 @@ export class Fastmail implements INodeType {
                     }
                   : {}),
                 successful: operation === 'delete' ? (result.destroyed ?? []).includes(messageId) : Object.keys(result.updated ?? {}).includes(messageId)
-              }, includeJmapResponse, response, readBackEmail == null ? {} : {
-                readBackResponse,
-                readBackMessage: {
-                  id: readBackEmail.id,
-                  mailboxIds: readBackEmail.mailboxIds ?? {},
-                  keywords: readBackEmail.keywords ?? {}
-                }
-              }),
+              }, includeJmapResponse, response, readBackEmail == null
+                ? {}
+                : {
+                    readBackResponse,
+                    readBackMessage: {
+                      id: readBackEmail.id,
+                      mailboxIds: readBackEmail.mailboxIds ?? {},
+                      keywords: readBackEmail.keywords ?? {}
+                    }
+                  }),
               pairedItem: { item: i }
             })
             continue
@@ -1628,14 +1630,16 @@ export class Fastmail implements INodeType {
                 successful: Object.keys(result.updated ?? {}).includes(messageId),
                 updated: result.updated ?? {},
                 notUpdated: result.notUpdated ?? {}
-              }, includeJmapResponse, response, readBackEmail == null ? {} : {
-                readBackResponse,
-                readBackMessage: {
-                  id: readBackEmail.id,
-                  mailboxIds: readBackEmail.mailboxIds ?? {},
-                  keywords: readBackEmail.keywords ?? {}
-                }
-              }),
+              }, includeJmapResponse, response, readBackEmail == null
+                ? {}
+                : {
+                    readBackResponse,
+                    readBackMessage: {
+                      id: readBackEmail.id,
+                      mailboxIds: readBackEmail.mailboxIds ?? {},
+                      keywords: readBackEmail.keywords ?? {}
+                    }
+                  }),
               pairedItem: { item: i }
             })
             continue

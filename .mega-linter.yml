@@ -1,0 +1,20 @@
+---
+# Configuration file for MegaLinter
+
+IGNORE_GITIGNORED_FILES: true
+YAML_YAMLLINT_CONFIG_FILE: .yamllint
+
+# Helm templates are Go templates, vendored CRDs should stay byte-close to upstream,
+# and Helm unittest/values files do not map cleanly to a JSON schema for v8r.
+
+DISABLE:
+  - COPYPASTE
+DISABLE_LINTERS:
+  - COPYPASTE_JSCPD
+
+SPELL_CSPELL_DISABLE_ERRORS: true
+
+SHOW_ELAPSED_TIME: true
+CLEAR_REPORT_FOLDER: true
+REPORTERS_MARKDOWN_TYPE: simple
+PRINT_ALPACA: false
