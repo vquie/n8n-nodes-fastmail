@@ -30,7 +30,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ML_VERSION: v9.4.0
-          ML_IMAGE: megalinter-ci_light
+          ML_IMAGE: megalinter-cupcake
           DEFAULT_WORKSPACE: ${{ github.workspace }}
           MEGALINTER_CONFIG: .mega-linter.yml
           REPORT_OUTPUT_FOLDER: megalinter-reports
