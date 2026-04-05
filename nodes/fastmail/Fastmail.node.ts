@@ -318,6 +318,80 @@ interface ComposeOptions {
   attachmentBinaryProperties?: string
 }
 
+function escapeHtml (value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function prefixSubject (subject: string | undefined, prefix: string): string {
+  const normalizedSubject = subject ?? ''
+  return normalizedSubject.toLowerCase().startsWith(`${prefix.toLowerCase()}:`)
+    ? normalizedSubject
+    : `${prefix}: ${normalizedSubject}`
+}
+
+function buildForwardedTextBody (original: EmailRecord): string {
+  const bodyValues = original.bodyValues ?? {}
+  const originalText = extractBodyValue(original.textBody, bodyValues) ?? original.preview ?? ''
+  const lines = [
+    '---------- Forwarded message ----------',
+    `From: ${formatAddressList(original.from).join(', ')}`,
+    `Date: ${original.receivedAt ?? ''}`,
+    `Subject: ${original.subject ?? ''}`,
+    `To: ${formatAddressList(original.to).join(', ')}`
+  ]
+
+  const ccLine = formatAddressList(original.cc).join(', ')
+  if (ccLine !== '') {
+    lines.push(`Cc: ${ccLine}`)
+  }
+
+  lines.push('', originalText)
+  return lines.join('\n')
+}
+
+function buildForwardedHtmlBody (original: EmailRecord): string {
+  const bodyValues = original.bodyValues ?? {}
+  const originalText = extractBodyValue(original.textBody, bodyValues) ?? original.preview ?? ''
+  const originalHtml = extractBodyValue(original.htmlBody, bodyValues)
+  const fromLine = escapeHtml(formatAddressList(original.from).join(', '))
+  const toLine = escapeHtml(formatAddressList(original.to).join(', '))
+  const ccLine = escapeHtml(formatAddressList(original.cc).join(', '))
+  const receivedAt = escapeHtml(original.receivedAt ?? '')
+  const subject = escapeHtml(original.subject ?? '')
+  const htmlBody = originalHtml && originalHtml.trim() !== ''
+    ? originalHtml
+    : `<pre>${escapeHtml(originalText)}</pre>`
+
+  return [
+    '<div>---------- Forwarded message ----------</div>',
+    `<div><strong>From:</strong> ${fromLine}</div>`,
+    `<div><strong>Date:</strong> ${receivedAt}</div>`,
+    `<div><strong>Subject:</strong> ${subject}</div>`,
+    `<div><strong>To:</strong> ${toLine}</div>`,
+    ...(ccLine !== '' ? [`<div><strong>Cc:</strong> ${ccLine}</div>`] : []),
+    '<br>',
+    htmlBody
+  ].join('')
+}
+
+function mapOriginalAttachmentsForForward (original: EmailRecord): JsonObject[] {
+  return (original.attachments ?? [])
+    .filter((attachment) => typeof attachment.blobId === 'string' && attachment.blobId !== '')
+    .map((attachment) => ({
+      blobId: attachment.blobId,
+      type: attachment.type ?? 'application/octet-stream',
+      name: attachment.name ?? 'attachment',
+      disposition: attachment.disposition ?? 'attachment',
+      cid: attachment.cid,
+      size: attachment.size
+    }))
+}
+
 function withDebugData (
   json: JsonObject,
   includeJmapResponse: boolean,
@@ -391,16 +465,16 @@ function validateComposeOptions (
   const createAsDraft = composeOptions.createAsDraft === true
 
   if (!(resource === 'message' || resource === 'draft') && (hasCc || hasBcc)) {
-    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send or Draft Create', { itemIndex })
+    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send, Message Forward, or Draft Create', { itemIndex })
   }
-  if (!((resource === 'message' || resource === 'draft') && (operation === 'send' || operation === 'create')) && (hasCc || hasBcc)) {
-    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send or Draft Create', { itemIndex })
+  if (!((resource === 'message' || resource === 'draft') && (operation === 'send' || operation === 'create' || operation === 'forward')) && (hasCc || hasBcc)) {
+    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send, Message Forward, or Draft Create', { itemIndex })
   }
   if (!(operation === 'reply' && (resource === 'message' || resource === 'thread')) && replyAll) {
     throw new NodeOperationError(node.getNode(), 'Reply All is only supported for Message Reply or Thread Reply', { itemIndex })
   }
-  if (!(operation === 'reply' && (resource === 'message' || resource === 'thread')) && createAsDraft) {
-    throw new NodeOperationError(node.getNode(), 'Create as Draft is only supported for Message Reply or Thread Reply', { itemIndex })
+  if (!(((operation === 'reply' && (resource === 'message' || resource === 'thread')) || (operation === 'forward' && resource === 'message'))) && createAsDraft) {
+    throw new NodeOperationError(node.getNode(), 'Create as Draft is only supported for Message Reply, Thread Reply, or Message Forward', { itemIndex })
   }
 }
 
@@ -902,6 +976,7 @@ export class Fastmail implements INodeType {
         options: [
           { name: 'Add Label to Message', value: 'addLabel', action: 'Add a label to a message' },
           { name: 'Delete a Message', value: 'delete', action: 'Delete a message' },
+          { name: 'Forward a Message', value: 'forward', action: 'Forward a message' },
           { name: 'Get a Message', value: 'get', action: 'Get a message' },
           { name: 'Get Many Messages', value: 'getMany', action: 'Get many messages' },
           { name: 'Mark a Message as Not Spam', value: 'markAsNotSpam', action: 'Mark a message as not spam' },
@@ -982,7 +1057,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message'],
-            operation: ['get', 'delete', 'markRead', 'markUnread', 'markAsSpam', 'markAsNotSpam', 'markAsPhishing', 'addLabel', 'removeLabel', 'move', 'reply']
+            operation: ['get', 'delete', 'markRead', 'markUnread', 'markAsSpam', 'markAsNotSpam', 'markAsPhishing', 'addLabel', 'removeLabel', 'move', 'reply', 'forward']
           }
         }
       },
@@ -1209,7 +1284,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create']
+            operation: ['send', 'create', 'forward']
           }
         }
       },
@@ -1242,7 +1317,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft'],
-            operation: ['send', 'create']
+            operation: ['send', 'create', 'forward']
           }
         }
       },
@@ -1254,7 +1329,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft'],
-            operation: ['send', 'create']
+            operation: ['send', 'create', 'forward']
           }
         }
       },
@@ -1269,7 +1344,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply']
+            operation: ['send', 'create', 'reply', 'forward']
           }
         }
       },
@@ -1284,7 +1359,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply']
+            operation: ['send', 'create', 'reply', 'forward']
           }
         }
       },
@@ -1297,7 +1372,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply']
+            operation: ['send', 'create', 'reply', 'forward']
           }
         },
         options: [
@@ -1324,7 +1399,7 @@ export class Fastmail implements INodeType {
             name: 'createAsDraft',
             type: 'boolean',
             default: false,
-            description: 'Create the reply as a draft instead of sending it immediately'
+            description: 'Create the reply or forward as a draft instead of sending it immediately'
           },
           {
             displayName: 'Attachment Binary Properties',
@@ -1739,6 +1814,145 @@ export class Fastmail implements INodeType {
               }, includeJmapResponse, sendResponse, { identityResponse }),
               pairedItem: { item: i }
             })
+            continue
+          }
+
+          if (operation === 'forward') {
+            const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
+            validateComposeOptions(this, i, 'message', 'forward', composeOptions)
+            const messageId = this.getNodeParameter('messageId', i) as string
+            const identityId = this.getNodeParameter('identityId', i) as string
+            const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
+            const cc = parseCsvEmails(composeOptions.cc ?? '')
+            const bcc = parseCsvEmails(composeOptions.bcc ?? '')
+            const subjectInput = this.getNodeParameter('subject', i, '') as string
+            const textBodyInput = this.getNodeParameter('textBody', i, '') as string
+            const htmlBodyInput = this.getNodeParameter('htmlBody', i, '') as string
+            const createAsDraft = Boolean(composeOptions.createAsDraft ?? false)
+            const attachmentBinaryProperties = parseBinaryPropertyNames(composeOptions.attachmentBinaryProperties ?? '')
+            const uploaded = await uploadAttachmentsFromBinary(this, items[i], i, token, session, mailAccountId, attachmentBinaryProperties)
+
+            if (to.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'At least one recipient is required', { itemIndex: i })
+            }
+
+            const original = await getEmailById(this, token, session, mailAccountId, messageId, true, true)
+            if (original == null) {
+              throw new NodeOperationError(this.getNode(), 'Original message not found', { itemIndex: i })
+            }
+
+            const identityResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_SUBMISSION], [
+              ['Identity/get', { accountId: submissionAccountId, ids: [identityId] }, 'i1']
+            ])
+            const identity = methodResult<{ list?: IdentityRecord[] }>(identityResponse, 'Identity/get').list?.[0]
+            if (identity == null) {
+              throw new NodeOperationError(this.getNode(), 'Selected identity was not found', { itemIndex: i })
+            }
+            const draftMailboxId = await getMailboxIdByRole(this, token, session, mailAccountId, 'drafts')
+            if (draftMailboxId == null) {
+              throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
+            }
+
+            const forwardedTextBody = buildForwardedTextBody(original)
+            const forwardedHtmlBody = buildForwardedHtmlBody(original)
+            const textBody = [textBodyInput, forwardedTextBody].filter((part) => part.trim() !== '').join('\n\n')
+            const htmlBody = [htmlBodyInput, forwardedHtmlBody].filter((part) => part.trim() !== '').join('<br><br>')
+            const originalAttachments = mapOriginalAttachmentsForForward(original)
+            const attachments = [...originalAttachments, ...uploaded.emailAttachments]
+
+            if (!hasBodyContent(textBody, htmlBody) && attachments.length === 0) {
+              throw new NodeOperationError(this.getNode(), 'Forwarded content could not be created from the original message', { itemIndex: i })
+            }
+
+            const subject = subjectInput.trim() !== '' ? subjectInput : prefixSubject(original.subject, 'Fwd')
+            const createEmail: JsonObject = {
+              from: [{ email: identity.email, name: identity.name }],
+              to,
+              subject,
+              keywords: { $draft: true },
+              mailboxIds: { [draftMailboxId]: true }
+            }
+            if (cc.length > 0) createEmail.cc = cc
+            if (bcc.length > 0) createEmail.bcc = bcc
+
+            const bodyValues: Record<string, JsonObject> = {}
+            if (textBody.trim() !== '') {
+              bodyValues.textPart = { value: textBody }
+              createEmail.textBody = [{ partId: 'textPart', type: 'text/plain' }]
+            }
+            if (htmlBody.trim() !== '') {
+              bodyValues.htmlPart = { value: htmlBody }
+              createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
+            }
+            if (Object.keys(bodyValues).length > 0) createEmail.bodyValues = bodyValues
+            if (attachments.length > 0) createEmail.attachments = attachments
+
+            const forwardResponse = await callJmap(
+              this,
+              token,
+              session,
+              createAsDraft ? [JMAP_CORE, JMAP_MAIL] : [JMAP_CORE, JMAP_MAIL, JMAP_SUBMISSION],
+              createAsDraft
+                ? [['Email/set', { accountId: mailAccountId, create: { forwardDraft: createEmail } }, 'c1']]
+                : [
+                    ['Email/set', { accountId: mailAccountId, create: { forwardDraft: createEmail } }, 'c1'],
+                    [
+                      'EmailSubmission/set',
+                      {
+                        accountId: submissionAccountId,
+                        create: { submit: { identityId, emailId: '#forwardDraft' } }
+                      },
+                      's1'
+                    ]
+                  ]
+            )
+
+            const emailSetResult = methodResultByCallId<JmapSetResult>(forwardResponse, 'c1', 'Email/set')
+            const createdId = firstCreatedId(emailSetResult)
+            if (createdId == null) {
+              const notCreated = JSON.stringify(emailSetResult.notCreated ?? {})
+              throw new NodeOperationError(this.getNode(), `Forward could not be created. notCreated: ${notCreated}`, { itemIndex: i })
+            }
+
+            if (createAsDraft) {
+              returnData.push({
+                json: withDebugData({
+                  success: true,
+                  draftId: createdId,
+                  submitted: false,
+                  sourceMessageId: messageId,
+                  originalAttachmentCount: originalAttachments.length,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                }, includeJmapResponse, forwardResponse, { identityResponse }),
+                pairedItem: { item: i }
+              })
+            } else {
+              const submissionResult = methodResultByCallId<JmapSetResult>(forwardResponse, 's1', 'EmailSubmission/set')
+              if (firstCreatedId(submissionResult) == null) {
+                const notCreated = JSON.stringify(submissionResult.notCreated ?? {})
+                throw new NodeOperationError(this.getNode(), `Forward submission failed. notCreated: ${notCreated}`, { itemIndex: i })
+              }
+
+              let draftCleanup: { success: boolean, error?: string } = { success: true }
+              try {
+                await destroyEmailById(this, token, session, mailAccountId, createdId)
+              } catch (error) {
+                draftCleanup = { success: false, error: (error as Error).message }
+              }
+
+              returnData.push({
+                json: withDebugData({
+                  success: true,
+                  forwardedMessageId: createdId,
+                  sourceMessageId: messageId,
+                  submitted: true,
+                  originalAttachmentCount: originalAttachments.length,
+                  draftCleanup,
+                  uploadedAttachments: uploaded.uploadedAttachments
+                }, includeJmapResponse, forwardResponse, { identityResponse }),
+                pairedItem: { item: i }
+              })
+            }
             continue
           }
 

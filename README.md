@@ -23,6 +23,7 @@ This package provides:
 
 - Add label to message
 - Delete a message
+- Forward a message
 - Get a message
 - Get many messages
 - Mark a message as read
@@ -38,6 +39,7 @@ Attachments are supported as options on existing operations (not as separate act
 
 - Upload from input binary properties on:
   - Message `Send`
+  - Message `Forward`
   - Message `Reply`
   - Draft `Create`
   - Thread `Reply`
@@ -81,9 +83,10 @@ The node fetches available Fastmail data directly for dropdowns:
 
 - Optional fields are hidden by default.
 - Use `Compose Options` to enable granular fields like `Cc`, `Bcc`, `Reply All`, `Create as Draft` for replies, and attachment binary mapping.
+  Forwarding follows the same compose pattern, including `Create as Draft`.
 - Use `Fetch Options` to enable granular fields like `Search`, `Read Status`, body values, and attachment download settings.
 - `Mailbox Scope` and mailbox selection stay as dedicated top-level fields on `Get Many` (message/thread) for reliable mailbox picking.
-- Invalid option combinations are rejected with explicit errors (for example, `Reply All` or `Create as Draft` outside reply operations).
+- Invalid option combinations are rejected with explicit errors (for example, `Reply All` outside reply operations or `Create as Draft` outside reply/forward operations).
 
 ## Credentials
 
