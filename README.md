@@ -82,11 +82,12 @@ The node fetches available Fastmail data directly for dropdowns:
 ### UI behavior
 
 - Optional fields are hidden by default.
-- Use `Compose Options` to enable granular fields like `Cc`, `Bcc`, `Reply All`, `Create as Draft` for replies, and attachment binary mapping.
-  Forwarding follows the same compose pattern, including `Create as Draft`.
+- Reply and forward operations expose an `Auto Fill From Original` toggle.
+  When enabled, the node keeps the current automatic behavior; when disabled, manual fields become available for values that would otherwise be derived from the original message.
+- Use `Compose Options` to enable granular fields like `Cc`, `Bcc`, `Reply All`, `Create as Draft`, and attachment binary mapping.
 - Use `Fetch Options` to enable granular fields like `Search`, `Read Status`, body values, and attachment download settings.
 - `Mailbox Scope` and mailbox selection stay as dedicated top-level fields on `Get Many` (message/thread) for reliable mailbox picking.
-- Invalid option combinations are rejected with explicit errors (for example, `Reply All` outside reply operations or `Create as Draft` outside reply/forward operations).
+- Invalid option combinations are rejected with explicit errors (for example, `Reply All` outside auto-filled reply operations or `Create as Draft` outside reply/forward operations).
 
 ## Credentials
 
