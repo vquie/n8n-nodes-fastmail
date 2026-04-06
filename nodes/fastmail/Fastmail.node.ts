@@ -368,12 +368,12 @@ function buildForwardedHtmlBody (original: EmailRecord): string {
     : `<pre>${escapeHtml(originalText)}</pre>`
 
   return [
-    '<div>---------- Forwarded message ----------</div>',
-    `<div><strong>From:</strong> ${fromLine}</div>`,
-    `<div><strong>Date:</strong> ${receivedAt}</div>`,
-    `<div><strong>Subject:</strong> ${subject}</div>`,
-    `<div><strong>To:</strong> ${toLine}</div>`,
-    ...(ccLine !== '' ? [`<div><strong>Cc:</strong> ${ccLine}</div>`] : []),
+    '<div>----- Original message -----</div>',
+    `<div>From: ${fromLine}</div>`,
+    `<div>To: ${toLine}</div>`,
+    `<div>Subject: ${subject}</div>`,
+    `<div>Date: ${receivedAt}</div>`,
+    ...(ccLine !== '' ? [`<div>Cc: ${ccLine}</div>`] : []),
     '<br>',
     htmlBody
   ].join('')
