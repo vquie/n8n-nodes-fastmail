@@ -458,22 +458,23 @@ function validateComposeOptions (
   resource: string,
   operation: string,
   composeOptions: ComposeOptions,
-  autoFillFromOriginal = true
+  allowReplyCcBcc = false,
+  allowReplyAll = true
 ): void {
   const hasCc = hasNonEmptyText(composeOptions.cc)
   const hasBcc = hasNonEmptyText(composeOptions.bcc)
   const replyAll = composeOptions.replyAll === true
   const createAsDraft = composeOptions.createAsDraft === true
-  const allowsManualReplyRecipients = !autoFillFromOriginal && operation === 'reply' && (resource === 'message' || resource === 'thread')
+  const isReply = operation === 'reply' && (resource === 'message' || resource === 'thread')
 
   if (!(resource === 'message' || resource === 'draft' || resource === 'thread') && (hasCc || hasBcc)) {
     throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send, Message Forward, or Draft Create', { itemIndex })
   }
-  if (!(((resource === 'message' || resource === 'draft') && (operation === 'send' || operation === 'create' || operation === 'forward')) || allowsManualReplyRecipients) && (hasCc || hasBcc)) {
-    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send, Message Forward, Draft Create, or manual Reply', { itemIndex })
+  if (!(((resource === 'message' || resource === 'draft') && (operation === 'send' || operation === 'create' || operation === 'forward')) || (isReply && allowReplyCcBcc)) && (hasCc || hasBcc)) {
+    throw new NodeOperationError(node.getNode(), 'Cc/Bcc are only supported for Message Send, Message Forward, Draft Create, or Reply when manual recipients are enabled', { itemIndex })
   }
-  if (!(operation === 'reply' && (resource === 'message' || resource === 'thread') && autoFillFromOriginal) && replyAll) {
-    throw new NodeOperationError(node.getNode(), 'Reply All is only supported for Message Reply or Thread Reply when auto-fill is enabled', { itemIndex })
+  if (!(isReply && allowReplyAll) && replyAll) {
+    throw new NodeOperationError(node.getNode(), 'Reply All is only supported for Message Reply or Thread Reply when automatic recipients are enabled', { itemIndex })
   }
   if (!(((operation === 'reply' && (resource === 'message' || resource === 'thread')) || (operation === 'forward' && resource === 'message'))) && createAsDraft) {
     throw new NodeOperationError(node.getNode(), 'Create as Draft is only supported for Message Reply, Thread Reply, or Message Forward', { itemIndex })
@@ -1274,11 +1275,11 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'Auto Fill From Original',
-        name: 'autoFillFromOriginal',
+        displayName: 'Auto Fill Recipients',
+        name: 'autoFillReplyRecipients',
         type: 'boolean',
         default: true,
-        description: 'Whether to automatically reuse values from the original message',
+        description: 'Whether to automatically reuse reply recipients from the original message',
         displayOptions: {
           show: {
             resource: ['message', 'thread'],
@@ -1287,11 +1288,50 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'Auto Fill From Original',
-        name: 'autoFillFromOriginal',
+        displayName: 'Auto Fill Subject',
+        name: 'autoFillReplySubject',
         type: 'boolean',
         default: true,
-        description: 'Whether to automatically reuse subject, forwarded content, and original attachments from the original message',
+        description: 'Whether to automatically reuse the reply subject from the original message',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['reply']
+          }
+        }
+      },
+      {
+        displayName: 'Auto Fill Subject',
+        name: 'autoFillForwardSubject',
+        type: 'boolean',
+        default: true,
+        description: 'Whether to automatically reuse the forwarded subject from the original message',
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward']
+          }
+        }
+      },
+      {
+        displayName: 'Auto Fill Forwarded Content',
+        name: 'autoFillForwardContent',
+        type: 'boolean',
+        default: true,
+        description: 'Whether to automatically reuse the forwarded message content from the original message',
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward']
+          }
+        }
+      },
+      {
+        displayName: 'Auto Fill Original Attachments',
+        name: 'autoFillForwardAttachments',
+        type: 'boolean',
+        default: true,
+        description: 'Whether to automatically include attachments from the original message',
         displayOptions: {
           show: {
             resource: ['message'],
@@ -1361,7 +1401,7 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['message', 'thread'],
             operation: ['reply'],
-            autoFillFromOriginal: [false]
+            autoFillReplyRecipients: [false]
           }
         }
       },
@@ -1373,7 +1413,7 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft'],
-            operation: ['send', 'create', 'forward']
+            operation: ['send', 'create']
           }
         }
       },
@@ -1386,7 +1426,20 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['message', 'thread'],
             operation: ['reply'],
-            autoFillFromOriginal: [false]
+            autoFillReplySubject: [false]
+          }
+        }
+      },
+      {
+        displayName: 'Subject',
+        name: 'subject',
+        type: 'string',
+        default: '',
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardSubject: [false]
           }
         }
       },
@@ -1401,7 +1454,23 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply', 'forward']
+            operation: ['send', 'create', 'reply']
+          }
+        }
+      },
+      {
+        displayName: 'Text Body',
+        name: 'textBody',
+        type: 'string',
+        default: '',
+        typeOptions: {
+          rows: 6
+        },
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardContent: [false]
           }
         }
       },
@@ -1416,7 +1485,23 @@ export class Fastmail implements INodeType {
         displayOptions: {
           show: {
             resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply', 'forward']
+            operation: ['send', 'create', 'reply']
+          }
+        }
+      },
+      {
+        displayName: 'HTML Body',
+        name: 'htmlBody',
+        type: 'string',
+        default: '',
+        typeOptions: {
+          rows: 6
+        },
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardContent: [false]
           }
         }
       },
@@ -1876,13 +1961,15 @@ export class Fastmail implements INodeType {
 
           if (operation === 'forward') {
             const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
-            const autoFillFromOriginal = Boolean(this.getNodeParameter('autoFillFromOriginal', i, true))
-            validateComposeOptions(this, i, 'message', 'forward', composeOptions, autoFillFromOriginal)
+            validateComposeOptions(this, i, 'message', 'forward', composeOptions)
             const messageId = this.getNodeParameter('messageId', i) as string
             const identityId = this.getNodeParameter('identityId', i) as string
             const to = parseCsvEmails(this.getNodeParameter('to', i) as string)
             const cc = parseCsvEmails(composeOptions.cc ?? '')
             const bcc = parseCsvEmails(composeOptions.bcc ?? '')
+            const autoFillForwardSubject = Boolean(this.getNodeParameter('autoFillForwardSubject', i, true))
+            const autoFillForwardContent = Boolean(this.getNodeParameter('autoFillForwardContent', i, true))
+            const autoFillForwardAttachments = Boolean(this.getNodeParameter('autoFillForwardAttachments', i, true))
             const subjectInput = this.getNodeParameter('subject', i, '') as string
             const textBodyInput = this.getNodeParameter('textBody', i, '') as string
             const htmlBodyInput = this.getNodeParameter('htmlBody', i, '') as string
@@ -1911,22 +1998,16 @@ export class Fastmail implements INodeType {
               throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
             }
 
-            const forwardedTextBody = autoFillFromOriginal ? buildForwardedTextBody(original) : ''
-            const forwardedHtmlBody = autoFillFromOriginal ? buildForwardedHtmlBody(original) : ''
-            const textBody = [textBodyInput, forwardedTextBody].filter((part) => part.trim() !== '').join('\n\n')
-            const htmlBody = [htmlBodyInput, forwardedHtmlBody].filter((part) => part.trim() !== '').join('<br><br>')
-            const originalAttachments = autoFillFromOriginal ? mapOriginalAttachmentsForForward(original) : []
+            const textBody = autoFillForwardContent ? buildForwardedTextBody(original) : textBodyInput
+            const htmlBody = autoFillForwardContent ? buildForwardedHtmlBody(original) : htmlBodyInput
+            const originalAttachments = autoFillForwardAttachments ? mapOriginalAttachmentsForForward(original) : []
             const attachments = [...originalAttachments, ...uploaded.emailAttachments]
 
             if (!hasBodyContent(textBody, htmlBody) && attachments.length === 0) {
               throw new NodeOperationError(this.getNode(), 'Forwarded content could not be created from the original message', { itemIndex: i })
             }
 
-            const subject = subjectInput.trim() !== ''
-              ? subjectInput
-              : autoFillFromOriginal
-                  ? prefixSubject(original.subject, 'Fwd')
-                  : ''
+            const subject = autoFillForwardSubject ? prefixSubject(original.subject, 'Fwd') : subjectInput
             const createEmail: JsonObject = {
               from: [{ email: identity.email, name: identity.name }],
               to,
@@ -2020,8 +2101,9 @@ export class Fastmail implements INodeType {
 
           if (operation === 'reply') {
             const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
-            const autoFillFromOriginal = Boolean(this.getNodeParameter('autoFillFromOriginal', i, true))
-            validateComposeOptions(this, i, 'message', 'reply', composeOptions, autoFillFromOriginal)
+            const autoFillReplyRecipients = Boolean(this.getNodeParameter('autoFillReplyRecipients', i, true))
+            const autoFillReplySubject = Boolean(this.getNodeParameter('autoFillReplySubject', i, true))
+            validateComposeOptions(this, i, 'message', 'reply', composeOptions, !autoFillReplyRecipients, autoFillReplyRecipients)
             const messageId = this.getNodeParameter('messageId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
@@ -2056,13 +2138,13 @@ export class Fastmail implements INodeType {
               throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
             }
 
-            const recipients: EmailAddress[] = autoFillFromOriginal
+            const recipients: EmailAddress[] = autoFillReplyRecipients
               ? [...(original.from ?? [])]
               : parseCsvEmails(this.getNodeParameter('to', i, '') as string)
             if (recipients.length === 0) {
               throw new NodeOperationError(this.getNode(), 'At least one recipient is required', { itemIndex: i })
             }
-            if (autoFillFromOriginal && replyAll) {
+            if (autoFillReplyRecipients && replyAll) {
               const addrs = [...(original.to ?? []), ...(original.cc ?? [])]
               for (const addr of addrs) {
                 const exists = recipients.some((r) => r.email.toLowerCase() === addr.email.toLowerCase())
@@ -2072,7 +2154,7 @@ export class Fastmail implements INodeType {
               }
             }
 
-            const subject = autoFillFromOriginal
+            const subject = autoFillReplySubject
               ? prefixSubject(original.subject, 'Re')
               : (this.getNodeParameter('subject', i, '') as string)
             const createEmail: JsonObject = {
@@ -2511,8 +2593,9 @@ export class Fastmail implements INodeType {
 
           if (operation === 'reply') {
             const composeOptions = this.getNodeParameter('composeOptions', i, {}) as ComposeOptions
-            const autoFillFromOriginal = Boolean(this.getNodeParameter('autoFillFromOriginal', i, true))
-            validateComposeOptions(this, i, 'thread', 'reply', composeOptions, autoFillFromOriginal)
+            const autoFillReplyRecipients = Boolean(this.getNodeParameter('autoFillReplyRecipients', i, true))
+            const autoFillReplySubject = Boolean(this.getNodeParameter('autoFillReplySubject', i, true))
+            validateComposeOptions(this, i, 'thread', 'reply', composeOptions, !autoFillReplyRecipients, autoFillReplyRecipients)
             const messageId = this.getNodeParameter('replyMessageId', i) as string
             const textBody = this.getNodeParameter('textBody', i, '') as string
             const htmlBody = this.getNodeParameter('htmlBody', i, '') as string
@@ -2547,13 +2630,13 @@ export class Fastmail implements INodeType {
               throw new NodeOperationError(this.getNode(), 'Drafts mailbox could not be found', { itemIndex: i })
             }
 
-            const recipients: EmailAddress[] = autoFillFromOriginal
+            const recipients: EmailAddress[] = autoFillReplyRecipients
               ? [...(original.from ?? [])]
               : parseCsvEmails(this.getNodeParameter('to', i, '') as string)
             if (recipients.length === 0) {
               throw new NodeOperationError(this.getNode(), 'At least one recipient is required', { itemIndex: i })
             }
-            if (autoFillFromOriginal && replyAll) {
+            if (autoFillReplyRecipients && replyAll) {
               const addrs = [...(original.to ?? []), ...(original.cc ?? [])]
               for (const addr of addrs) {
                 const exists = recipients.some((r) => r.email.toLowerCase() === addr.email.toLowerCase())
@@ -2563,7 +2646,7 @@ export class Fastmail implements INodeType {
               }
             }
 
-            const subject = autoFillFromOriginal
+            const subject = autoFillReplySubject
               ? prefixSubject(original.subject, 'Re')
               : (this.getNodeParameter('subject', i, '') as string)
             const createEmail: JsonObject = {

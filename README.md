@@ -82,8 +82,8 @@ The node fetches available Fastmail data directly for dropdowns:
 ### UI behavior
 
 - Optional fields are hidden by default.
-- Reply and forward operations expose an `Auto Fill From Original` toggle.
-  When enabled, the node keeps the current automatic behavior; when disabled, manual fields become available for values that would otherwise be derived from the original message.
+- Reply and forward operations expose per-field auto-fill toggles.
+  Each toggle keeps the current automatic behavior when enabled and reveals the corresponding manual field only when disabled.
 - Use `Compose Options` to enable granular fields like `Cc`, `Bcc`, `Reply All`, `Create as Draft`, and attachment binary mapping.
 - Use `Fetch Options` to enable granular fields like `Search`, `Read Status`, body values, and attachment download settings.
 - `Mailbox Scope` and mailbox selection stay as dedicated top-level fields on `Get Many` (message/thread) for reliable mailbox picking.
