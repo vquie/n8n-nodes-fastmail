@@ -1288,6 +1288,22 @@ export class Fastmail implements INodeType {
         }
       },
       {
+        displayName: 'To',
+        name: 'to',
+        type: 'string',
+        required: true,
+        default: '',
+        placeholder: 'alice@example.com,bob@example.com',
+        description: 'Comma-separated recipient emails',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['reply'],
+            autoFillReplyRecipients: [false]
+          }
+        }
+      },
+      {
         displayName: 'Auto Fill Subject',
         name: 'autoFillReplySubject',
         type: 'boolean',
@@ -1297,6 +1313,19 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['message', 'thread'],
             operation: ['reply']
+          }
+        }
+      },
+      {
+        displayName: 'Subject',
+        name: 'subject',
+        type: 'string',
+        default: '',
+        displayOptions: {
+          show: {
+            resource: ['message', 'thread'],
+            operation: ['reply'],
+            autoFillReplySubject: [false]
           }
         }
       },
@@ -1314,6 +1343,19 @@ export class Fastmail implements INodeType {
         }
       },
       {
+        displayName: 'Subject',
+        name: 'subject',
+        type: 'string',
+        default: '',
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardSubject: [false]
+          }
+        }
+      },
+      {
         displayName: 'Auto Fill Forwarded Content',
         name: 'autoFillForwardContent',
         type: 'boolean',
@@ -1323,6 +1365,38 @@ export class Fastmail implements INodeType {
           show: {
             resource: ['message'],
             operation: ['forward']
+          }
+        }
+      },
+      {
+        displayName: 'Text Body',
+        name: 'textBody',
+        type: 'string',
+        default: '',
+        typeOptions: {
+          rows: 6
+        },
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardContent: [false]
+          }
+        }
+      },
+      {
+        displayName: 'HTML Body',
+        name: 'htmlBody',
+        type: 'string',
+        default: '',
+        typeOptions: {
+          rows: 6
+        },
+        displayOptions: {
+          show: {
+            resource: ['message'],
+            operation: ['forward'],
+            autoFillForwardContent: [false]
           }
         }
       },
@@ -1390,22 +1464,6 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'To',
-        name: 'to',
-        type: 'string',
-        required: true,
-        default: '',
-        placeholder: 'alice@example.com,bob@example.com',
-        description: 'Comma-separated recipient emails',
-        displayOptions: {
-          show: {
-            resource: ['message', 'thread'],
-            operation: ['reply'],
-            autoFillReplyRecipients: [false]
-          }
-        }
-      },
-      {
         displayName: 'Subject',
         name: 'subject',
         type: 'string',
@@ -1418,65 +1476,8 @@ export class Fastmail implements INodeType {
         }
       },
       {
-        displayName: 'Subject',
-        name: 'subject',
-        type: 'string',
-        default: '',
-        displayOptions: {
-          show: {
-            resource: ['message', 'thread'],
-            operation: ['reply'],
-            autoFillReplySubject: [false]
-          }
-        }
-      },
-      {
-        displayName: 'Subject',
-        name: 'subject',
-        type: 'string',
-        default: '',
-        displayOptions: {
-          show: {
-            resource: ['message'],
-            operation: ['forward'],
-            autoFillForwardSubject: [false]
-          }
-        }
-      },
-      {
         displayName: 'Text Body',
         name: 'textBody',
-        type: 'string',
-        default: '',
-        typeOptions: {
-          rows: 6
-        },
-        displayOptions: {
-          show: {
-            resource: ['message', 'draft', 'thread'],
-            operation: ['send', 'create', 'reply']
-          }
-        }
-      },
-      {
-        displayName: 'Text Body',
-        name: 'textBody',
-        type: 'string',
-        default: '',
-        typeOptions: {
-          rows: 6
-        },
-        displayOptions: {
-          show: {
-            resource: ['message'],
-            operation: ['forward'],
-            autoFillForwardContent: [false]
-          }
-        }
-      },
-      {
-        displayName: 'HTML Body',
-        name: 'htmlBody',
         type: 'string',
         default: '',
         typeOptions: {
@@ -1499,9 +1500,8 @@ export class Fastmail implements INodeType {
         },
         displayOptions: {
           show: {
-            resource: ['message'],
-            operation: ['forward'],
-            autoFillForwardContent: [false]
+            resource: ['message', 'draft', 'thread'],
+            operation: ['send', 'create', 'reply']
           }
         }
       },
