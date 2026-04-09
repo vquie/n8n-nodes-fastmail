@@ -69,12 +69,12 @@ async function getSession (node: ITriggerFunctions | ILoadOptionsFunctions, toke
 
 function getPrimaryMailAccountId (session: SessionResponse): string {
   const primary = session.primaryAccounts?.[JMAP_MAIL]
-  if (primary) return primary
+  if (typeof primary === 'string' && primary !== '') return primary
 
   const discovered = Object.entries(session.accounts ?? {}).find(([, account]) =>
     Boolean(account.accountCapabilities?.[JMAP_MAIL])
   )?.[0]
-  if (discovered) return discovered
+  if (typeof discovered === 'string' && discovered !== '') return discovered
 
   throw new Error(`No account found for capability ${JMAP_MAIL}`)
 }
@@ -134,7 +134,10 @@ function methodResult<T = JsonObject> (response: JmapResponse, methodName: strin
 }
 
 function formatAddressList (addresses?: EmailAddress[]): string[] {
-  return (addresses ?? []).map((entry) => entry.name ? `${entry.name} <${entry.email}>` : entry.email)
+  return (addresses ?? []).map((entry) => {
+    const name = entry.name ?? ''
+    return name !== '' ? `${name} <${entry.email}>` : entry.email
+  })
 }
 
 function simplifyEmail (email: EmailRecord): JsonObject {
@@ -174,7 +177,8 @@ function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
     const mailbox = byId.get(mailboxId)
     if (mailbox == null) return mailboxId
 
-    const ownName = mailbox.name?.trim() || mailbox.id
+    const trimmedName = mailbox.name?.trim()
+    const ownName = (typeof trimmedName === 'string' && trimmedName !== '') ? trimmedName : mailbox.id
     const parentId = mailbox.parentId ?? ''
     if (parentId === '' || !byId.has(parentId) || visiting.has(mailboxId)) {
       cache.set(mailboxId, ownName)
@@ -195,6 +199,11 @@ function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
   }
 
   return cache
+}
+
+function omitKey<T> (record: Record<string, T>, key: string): Record<string, T> {
+  const { [key]: _removed, ...rest } = record
+  return rest
 }
 
 async function getMailboxes (
@@ -384,7 +393,7 @@ export class FastmailTrigger implements INodeType {
         return mailboxes
           .filter((mailbox) => mailbox.id)
           .map((mailbox) => ({
-            name: mailbox.role
+            name: (typeof mailbox.role === 'string' && mailbox.role !== '')
               ? `${mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id} (${mailbox.role})`
               : (mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id),
             value: mailbox.id
@@ -460,7 +469,7 @@ export class FastmailTrigger implements INodeType {
     }
 
     const getQueryState = async (session: SessionResponse, accountId: string): Promise<string> => {
-      const filter = filterLabelId ? { inMailbox: filterLabelId } : undefined
+      const filter = filterLabelId !== '' ? { inMailbox: filterLabelId } : undefined
       const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
         ['Email/query', { accountId, filter, sort: [{ property: 'receivedAt', isAscending: false }], limit: 1 }, 'q1']
       ])
@@ -493,11 +502,11 @@ export class FastmailTrigger implements INodeType {
     const syncChanges = async (session: SessionResponse, accountId: string): Promise<void> => {
       const previousState = typeof staticData.lastQueryState === 'string' ? staticData.lastQueryState : ''
       const previousEmailState = typeof staticData.lastEmailState === 'string' ? staticData.lastEmailState : ''
-      const seenMap = (staticData.seenByMessageId as Record<string, boolean> | undefined) ?? {}
-      const mailboxMap = (staticData.mailboxIdsByMessageId as Record<string, string[]> | undefined) ?? {}
+      let seenMap = (staticData.seenByMessageId as Record<string, boolean> | undefined) ?? {}
+      let mailboxMap = (staticData.mailboxIdsByMessageId as Record<string, string[]> | undefined) ?? {}
       staticData.seenByMessageId = seenMap
       staticData.mailboxIdsByMessageId = mailboxMap
-      const filter = filterLabelId ? { inMailbox: filterLabelId } : undefined
+      const filter = filterLabelId !== '' ? { inMailbox: filterLabelId } : undefined
 
       if (previousState === '') {
         if (emitExistingOnStart) {
@@ -566,8 +575,10 @@ export class FastmailTrigger implements INodeType {
         }
 
         for (const destroyedId of (emailChanges.destroyed ?? [])) {
-          delete seenMap[destroyedId]
-          delete mailboxMap[destroyedId]
+          seenMap = omitKey(seenMap, destroyedId)
+          mailboxMap = omitKey(mailboxMap, destroyedId)
+          staticData.seenByMessageId = seenMap
+          staticData.mailboxIdsByMessageId = mailboxMap
           emitDeletedEvent(destroyedId)
         }
 
@@ -581,7 +592,7 @@ export class FastmailTrigger implements INodeType {
           for (const createdId of createdIds) {
             const email = emailById.get(createdId)
             if (email == null) continue
-            if (filterLabelId && email.mailboxIds?.[filterLabelId] !== true) continue
+            if (filterLabelId !== '' && email.mailboxIds?.[filterLabelId] !== true) continue
 
             emitEmailEvent('newEmail', email, 'change')
             seenMap[email.id] = Boolean(email.keywords?.$seen)
@@ -669,7 +680,8 @@ export class FastmailTrigger implements INodeType {
         eventId = undefined
       }
 
-      while (!stopped) {
+      while (true) {
+        if (stopped) break
         const { done, value } = await reader.read()
         if (done) {
           await dispatchEvent()
@@ -697,7 +709,7 @@ export class FastmailTrigger implements INodeType {
             let valuePart = separatorIndex >= 0 ? rawLine.slice(separatorIndex + 1) : ''
             if (valuePart.startsWith(' ')) valuePart = valuePart.slice(1)
 
-            if (field === 'event') eventName = valuePart || 'message'
+            if (field === 'event') eventName = valuePart !== '' ? valuePart : 'message'
             if (field === 'data') eventDataLines.push(valuePart)
             if (field === 'id') eventId = valuePart
           }

@@ -107,12 +107,12 @@ async function getSession (node: IExecuteFunctions | ILoadOptionsFunctions, toke
 
 function getPrimaryAccountId (session: SessionResponse, capability: string): string {
   const primary = session.primaryAccounts?.[capability]
-  if (primary) return primary
+  if (typeof primary === 'string' && primary !== '') return primary
 
   const discovered = Object.entries(session.accounts ?? {}).find(([, account]) =>
     Boolean(account.accountCapabilities?.[capability])
   )?.[0]
-  if (discovered) return discovered
+  if (typeof discovered === 'string' && discovered !== '') return discovered
 
   throw new Error(`No account found for capability ${capability}`)
 }
@@ -175,7 +175,10 @@ function parseCsvEmails (value: string): Array<{ email: string }> {
 }
 
 function formatAddressList (addresses?: EmailAddress[]): string[] {
-  return (addresses ?? []).map((entry) => entry.name ? `${entry.name} <${entry.email}>` : entry.email)
+  return (addresses ?? []).map((entry) => {
+    const name = entry.name ?? ''
+    return name !== '' ? `${name} <${entry.email}>` : entry.email
+  })
 }
 
 function getCredentialTypeForAuthMode (authentication: FastmailAuthMode): string {
@@ -362,7 +365,7 @@ function buildForwardedHtmlBody (original: EmailRecord): string {
   const ccLine = escapeHtml(formatAddressList(original.cc).join(', '))
   const receivedAt = escapeHtml(original.receivedAt ?? '')
   const subject = escapeHtml(original.subject ?? '')
-  const htmlBody = originalHtml && originalHtml.trim() !== ''
+  const htmlBody = typeof originalHtml === 'string' && originalHtml.trim() !== ''
     ? originalHtml
     : `<pre>${escapeHtml(originalText)}</pre>`
 
@@ -703,7 +706,7 @@ function summarizeThread (thread: ThreadRecord, emailMap: Map<string, EmailRecor
   const summary: JsonObject = {
     id: thread.id,
     messageCount: emailIds.length,
-    unreadCount: emails.filter((email) => !email.keywords?.$seen).length,
+    unreadCount: emails.filter((email) => email.keywords?.$seen !== true).length,
     latestMessageSubject: latest?.subject ?? null,
     latestMessageFrom: latest?.from?.[0]?.email ?? null,
     latestMessageAt: latest?.receivedAt ?? null,
@@ -728,7 +731,8 @@ function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
     const mailbox = byId.get(mailboxId)
     if (mailbox == null) return mailboxId
 
-    const ownName = mailbox.name?.trim() || mailbox.id
+    const trimmedName = mailbox.name?.trim()
+    const ownName = (typeof trimmedName === 'string' && trimmedName !== '') ? trimmedName : mailbox.id
     const parentId = mailbox.parentId ?? ''
     if (parentId === '' || !byId.has(parentId) || visiting.has(mailboxId)) {
       cache.set(mailboxId, ownName)
@@ -1643,7 +1647,7 @@ export class Fastmail implements INodeType {
         return mailboxes
           .filter((mailbox) => mailbox.id)
           .map((mailbox) => ({
-            name: mailbox.role
+            name: (typeof mailbox.role === 'string' && mailbox.role !== '')
               ? `${mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id} (${mailbox.role})`
               : (mailboxPathMap.get(mailbox.id) ?? mailbox.name ?? mailbox.id),
             value: mailbox.id
@@ -1661,7 +1665,7 @@ export class Fastmail implements INodeType {
         return identities
           .filter((identity) => identity.id)
           .map((identity) => ({
-            name: identity.name ? `${identity.name} <${identity.email}>` : identity.email,
+            name: (typeof identity.name === 'string' && identity.name !== '') ? `${identity.name} <${identity.email}>` : identity.email,
             value: identity.id
           }))
       }
@@ -1922,11 +1926,11 @@ export class Fastmail implements INodeType {
             if (bcc.length > 0) createEmail.bcc = bcc
 
             const bodyValues: Record<string, JsonObject> = {}
-            if (textBody) {
+            if (textBody !== '') {
               bodyValues.textPart = { value: textBody }
               createEmail.textBody = [{ partId: 'textPart', type: 'text/plain' }]
             }
-            if (htmlBody) {
+            if (htmlBody !== '') {
               bodyValues.htmlPart = { value: htmlBody }
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
@@ -2186,16 +2190,17 @@ export class Fastmail implements INodeType {
             if (cc.length > 0) createEmail.cc = cc
             if (bcc.length > 0) createEmail.bcc = bcc
 
-            if (original.messageId?.[0]) {
-              createEmail.inReplyTo = [original.messageId[0]]
+            const originalMessageId = original.messageId?.[0]
+            if (typeof originalMessageId === 'string' && originalMessageId !== '') {
+              createEmail.inReplyTo = [originalMessageId]
             }
 
             const bodyValues: Record<string, JsonObject> = {}
-            if (textBody) {
+            if (textBody !== '') {
               bodyValues.textPart = { value: textBody }
               createEmail.textBody = [{ partId: 'textPart', type: 'text/plain' }]
             }
-            if (htmlBody) {
+            if (htmlBody !== '') {
               bodyValues.htmlPart = { value: htmlBody }
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
@@ -2392,14 +2397,14 @@ export class Fastmail implements INodeType {
             }
             if (cc.length > 0) createEmail.cc = cc
             if (bcc.length > 0) createEmail.bcc = bcc
-            if (draftMailboxId) createEmail.mailboxIds = { [draftMailboxId]: true }
+            if (draftMailboxId != null) createEmail.mailboxIds = { [draftMailboxId]: true }
 
             const bodyValues: Record<string, JsonObject> = {}
-            if (textBody) {
+            if (textBody !== '') {
               bodyValues.textPart = { value: textBody }
               createEmail.textBody = [{ partId: 'textPart', type: 'text/plain' }]
             }
-            if (htmlBody) {
+            if (htmlBody !== '') {
               bodyValues.htmlPart = { value: htmlBody }
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
@@ -2678,16 +2683,17 @@ export class Fastmail implements INodeType {
             if (cc.length > 0) createEmail.cc = cc
             if (bcc.length > 0) createEmail.bcc = bcc
 
-            if (original.messageId?.[0]) {
-              createEmail.inReplyTo = [original.messageId[0]]
+            const originalMessageId = original.messageId?.[0]
+            if (typeof originalMessageId === 'string' && originalMessageId !== '') {
+              createEmail.inReplyTo = [originalMessageId]
             }
 
             const bodyValues: Record<string, JsonObject> = {}
-            if (textBody) {
+            if (textBody !== '') {
               bodyValues.textPart = { value: textBody }
               createEmail.textBody = [{ partId: 'textPart', type: 'text/plain' }]
             }
-            if (htmlBody) {
+            if (htmlBody !== '') {
               bodyValues.htmlPart = { value: htmlBody }
               createEmail.htmlBody = [{ partId: 'htmlPart', type: 'text/html' }]
             }
