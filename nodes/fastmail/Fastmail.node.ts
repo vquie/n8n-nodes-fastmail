@@ -306,8 +306,7 @@ interface FetchOptions {
   downloadAttachments?: boolean
   attachmentBinaryPrefix?: string
   includeEmailIds?: boolean
-  includeJmapResponse?: boolean
-  readBackMessageAfterUpdate?: boolean
+  debug?: boolean
 }
 
 interface ComposeOptions {
@@ -394,21 +393,48 @@ function mapOriginalAttachmentsForForward (original: EmailRecord): JsonObject[] 
 
 function withDebugData (
   json: JsonObject,
-  includeJmapResponse: boolean,
+  includeDebug: boolean,
   jmapResponse?: JmapResponse,
   extraDebug: JsonObject = {}
 ): JsonObject {
-  if (!includeJmapResponse && Object.keys(extraDebug).length === 0) {
+  if (!includeDebug && Object.keys(extraDebug).length === 0) {
     return json
   }
 
   return {
     ...json,
     debug: {
-      ...(includeJmapResponse && jmapResponse != null ? { jmapResponse } : {}),
+      ...(includeDebug && jmapResponse != null ? { jmapResponse } : {}),
       ...extraDebug
     }
   }
+}
+
+function toMessageDebugSnapshot (email: EmailRecord | null | undefined): JsonObject | null {
+  if (email == null) {
+    return null
+  }
+
+  return {
+    id: email.id,
+    mailboxIds: email.mailboxIds ?? {},
+    keywords: email.keywords ?? {}
+  }
+}
+
+async function getMessageDebugSnapshot (
+  node: IExecuteFunctions,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  messageId: string
+): Promise<JsonObject | null> {
+  const jmapResponse = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
+    ['Email/get', { accountId, ids: [messageId], properties: ['id', 'mailboxIds', 'keywords'] }, 'e1']
+  ])
+  const email = methodResult<{ list?: EmailRecord[] }>(jmapResponse, 'Email/get').list?.[0] ?? null
+
+  return toMessageDebugSnapshot(email)
 }
 
 function validateFetchOptions (
@@ -1236,18 +1262,11 @@ export class Fastmail implements INodeType {
             default: false
           },
           {
-            displayName: 'Debug: Include JMAP Response',
-            name: 'includeJmapResponse',
+            displayName: 'Debug',
+            name: 'debug',
             type: 'boolean',
             default: false,
-            description: 'Whether to include raw JMAP response data in the node output when available'
-          },
-          {
-            displayName: 'Debug: Read Back Message After Update',
-            name: 'readBackMessageAfterUpdate',
-            type: 'boolean',
-            default: false,
-            description: 'Whether to fetch the message again after supported update operations and include the returned state in debug output'
+            description: 'Whether to include debug output. Read operations include raw JMAP responses, and supported update operations include before and after message state'
           }
         ]
       },
@@ -1664,8 +1683,7 @@ export class Fastmail implements INodeType {
         const credentials = (await this.getCredentials(credentialType))
         const token = getTokenFromCredentials(credentials, authentication)
         const fetchOptions = this.getNodeParameter('fetchOptions', i, {}) as FetchOptions
-        const includeJmapResponse = Boolean(fetchOptions.includeJmapResponse ?? false)
-        const readBackMessageAfterUpdate = Boolean(fetchOptions.readBackMessageAfterUpdate ?? false)
+        const debugEnabled = Boolean(fetchOptions.debug ?? false)
 
         const session = await getSession(this, token)
         const mailAccountId = getPrimaryAccountId(session, JMAP_MAIL)
@@ -1725,7 +1743,7 @@ export class Fastmail implements INodeType {
 
             for (const email of emails) {
               const outputItem: INodeExecutionData = {
-                json: withDebugData(simplifyEmail(email, includeBodyValues), includeJmapResponse, queryResponse),
+                json: withDebugData(simplifyEmail(email, includeBodyValues), debugEnabled, queryResponse),
                 pairedItem: { item: i }
               }
               if (downloadAttachments) {
@@ -1743,6 +1761,7 @@ export class Fastmail implements INodeType {
           if (operation === 'delete' || operation === 'markRead' || operation === 'markUnread' || operation === 'addLabel' || operation === 'removeLabel' || operation === 'move') {
             const messageId = this.getNodeParameter('messageId', i) as string
             const update: JsonObject = {}
+            let beforeState: JsonObject | null | undefined
 
             if (operation === 'markRead') update['keywords/$seen'] = true
             if (operation === 'markUnread') update['keywords/$seen'] = false
@@ -1764,6 +1783,10 @@ export class Fastmail implements INodeType {
               update[`mailboxIds/${targetLabelId}`] = true
             }
 
+            if (debugEnabled) {
+              beforeState = await getMessageDebugSnapshot(this, token, session, mailAccountId, messageId)
+            }
+
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               operation === 'delete'
                 ? ['Email/set', { accountId: mailAccountId, destroy: [messageId] }, 's1']
@@ -1774,13 +1797,9 @@ export class Fastmail implements INodeType {
             if (operation !== 'delete') {
               assertEmailSetUpdated(this, i, `Message ${operation}`, [messageId], result)
             }
-            let readBackResponse: JmapResponse | undefined
-            let readBackEmail: EmailRecord | null = null
-            if (operation !== 'delete' && readBackMessageAfterUpdate) {
-              readBackResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-                ['Email/get', { accountId: mailAccountId, ids: [messageId], properties: ['id', 'mailboxIds', 'keywords'] }, 'e1']
-              ])
-              readBackEmail = methodResult<{ list?: EmailRecord[] }>(readBackResponse, 'Email/get').list?.[0] ?? null
+            let afterState: JsonObject | null | undefined
+            if (operation !== 'delete' && debugEnabled) {
+              afterState = await getMessageDebugSnapshot(this, token, session, mailAccountId, messageId)
             }
             returnData.push({
               json: withDebugData({
@@ -1793,15 +1812,11 @@ export class Fastmail implements INodeType {
                     }
                   : {}),
                 successful: operation === 'delete' ? (result.destroyed ?? []).includes(messageId) : Object.keys(result.updated ?? {}).includes(messageId)
-              }, includeJmapResponse, response, readBackEmail == null
+              }, debugEnabled, response, !debugEnabled
                 ? {}
                 : {
-                    readBackResponse,
-                    readBackMessage: {
-                      id: readBackEmail.id,
-                      mailboxIds: readBackEmail.mailboxIds ?? {},
-                      keywords: readBackEmail.keywords ?? {}
-                    }
+                    before: beforeState ?? null,
+                    after: operation === 'delete' ? null : (afterState ?? null)
                   }),
               pairedItem: { item: i }
             })
@@ -1811,6 +1826,7 @@ export class Fastmail implements INodeType {
           if (operation === 'markAsSpam' || operation === 'markAsNotSpam' || operation === 'markAsPhishing') {
             const messageId = this.getNodeParameter('messageId', i) as string
             const update: JsonObject = {}
+            let beforeState: JsonObject | null | undefined
             if (operation === 'markAsSpam') {
               update['keywords/$junk'] = true
               update['keywords/$notjunk'] = null
@@ -1825,19 +1841,19 @@ export class Fastmail implements INodeType {
               update['keywords/$notjunk'] = null
             }
 
+            if (debugEnabled) {
+              beforeState = await getMessageDebugSnapshot(this, token, session, mailAccountId, messageId)
+            }
+
             const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
               ['Email/set', { accountId: mailAccountId, update: { [messageId]: update } }, 's1']
             ])
 
             const result = methodResult<JmapSetResult>(response, 'Email/set')
             assertEmailSetUpdated(this, i, `Message ${operation}`, [messageId], result)
-            let readBackResponse: JmapResponse | undefined
-            let readBackEmail: EmailRecord | null = null
-            if (readBackMessageAfterUpdate) {
-              readBackResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-                ['Email/get', { accountId: mailAccountId, ids: [messageId], properties: ['id', 'mailboxIds', 'keywords'] }, 'e1']
-              ])
-              readBackEmail = methodResult<{ list?: EmailRecord[] }>(readBackResponse, 'Email/get').list?.[0] ?? null
+            let afterState: JsonObject | null | undefined
+            if (debugEnabled) {
+              afterState = await getMessageDebugSnapshot(this, token, session, mailAccountId, messageId)
             }
 
             returnData.push({
@@ -1847,16 +1863,17 @@ export class Fastmail implements INodeType {
                 successful: Object.keys(result.updated ?? {}).includes(messageId),
                 updated: result.updated ?? {},
                 notUpdated: result.notUpdated ?? {}
-              }, includeJmapResponse, response, readBackEmail == null
-                ? {}
-                : {
-                    readBackResponse,
-                    readBackMessage: {
-                      id: readBackEmail.id,
-                      mailboxIds: readBackEmail.mailboxIds ?? {},
-                      keywords: readBackEmail.keywords ?? {}
-                    }
-                  }),
+              }, debugEnabled, response, (() => {
+                if (!debugEnabled) {
+                  return {}
+                }
+
+                const extraDebug: JsonObject = {
+                  before: beforeState ?? null,
+                  after: afterState ?? null
+                }
+                return extraDebug
+              })()),
               pairedItem: { item: i }
             })
             continue
@@ -1953,7 +1970,7 @@ export class Fastmail implements INodeType {
                 sentMessageId: createdId,
                 draftCleanup,
                 uploadedAttachments: uploaded.uploadedAttachments
-              }, includeJmapResponse, sendResponse, { identityResponse }),
+              }, debugEnabled, sendResponse, { identityResponse }),
               pairedItem: { item: i }
             })
             continue
@@ -2066,7 +2083,7 @@ export class Fastmail implements INodeType {
                   sourceMessageId: messageId,
                   originalAttachmentCount: originalAttachments.length,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, forwardResponse, { identityResponse }),
+                }, debugEnabled, forwardResponse, { identityResponse }),
                 pairedItem: { item: i }
               })
             } else {
@@ -2092,7 +2109,7 @@ export class Fastmail implements INodeType {
                   originalAttachmentCount: originalAttachments.length,
                   draftCleanup,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, forwardResponse, { identityResponse }),
+                }, debugEnabled, forwardResponse, { identityResponse }),
                 pairedItem: { item: i }
               })
             }
@@ -2218,7 +2235,7 @@ export class Fastmail implements INodeType {
                   draftId: createdReplyId,
                   submitted: false,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, replyResponse),
+                }, debugEnabled, replyResponse),
                 pairedItem: { item: i }
               })
             } else {
@@ -2242,7 +2259,7 @@ export class Fastmail implements INodeType {
                   submitted: true,
                   draftCleanup,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, replyResponse),
+                }, debugEnabled, replyResponse),
                 pairedItem: { item: i }
               })
             }
@@ -2263,7 +2280,7 @@ export class Fastmail implements INodeType {
                   parentId: mailbox.parentId ?? null,
                   role: mailbox.role ?? null,
                   isSubscribed: mailbox.isSubscribed ?? null
-                }, includeJmapResponse, undefined, {
+                }, debugEnabled, undefined, {
                   note: 'Raw JMAP response is not attached for this helper-backed operation.'
                 }),
                 pairedItem: { item: i }
@@ -2291,7 +2308,7 @@ export class Fastmail implements INodeType {
                   parentId: mailbox.parentId ?? null,
                   role: mailbox.role ?? null,
                   isSubscribed: mailbox.isSubscribed ?? null
-                }, includeJmapResponse, response),
+                }, debugEnabled, response),
                 pairedItem: { item: i }
               })
             }
@@ -2314,7 +2331,7 @@ export class Fastmail implements INodeType {
                 success: true,
                 labelId: createdLabelId,
                 name: labelName
-              }, includeJmapResponse, response),
+              }, debugEnabled, response),
               pairedItem: { item: i }
             })
             continue
@@ -2331,7 +2348,7 @@ export class Fastmail implements INodeType {
                 action: 'deleteLabel',
                 labelId,
                 successful: (result.destroyed ?? []).includes(labelId)
-              }, includeJmapResponse, response),
+              }, debugEnabled, response),
               pairedItem: { item: i }
             })
             continue
@@ -2406,7 +2423,7 @@ export class Fastmail implements INodeType {
                   }
                   return createdId
                 })()
-              }, includeJmapResponse, response, { identityResponse }),
+              }, debugEnabled, response, { identityResponse }),
               pairedItem: { item: i }
             })
             continue
@@ -2440,7 +2457,7 @@ export class Fastmail implements INodeType {
 
             for (const draft of drafts) {
               returnData.push({
-                json: withDebugData(simplifyEmail(draft, includeBodyValues), includeJmapResponse, queryResponse),
+                json: withDebugData(simplifyEmail(draft, includeBodyValues), debugEnabled, queryResponse),
                 pairedItem: { item: i }
               })
             }
@@ -2458,7 +2475,7 @@ export class Fastmail implements INodeType {
                 action: 'deleteDraft',
                 draftId,
                 successful: (result.destroyed ?? []).includes(draftId)
-              }, includeJmapResponse, response),
+              }, debugEnabled, response),
               pairedItem: { item: i }
             })
             continue
@@ -2480,7 +2497,7 @@ export class Fastmail implements INodeType {
               const emails = await getEmailsByIds(this, token, session, mailAccountId, thread.emailIds ?? [])
               const emailMap = new Map(emails.map((email) => [email.id, email]))
               returnData.push({
-                json: withDebugData(summarizeThread(thread, emailMap, includeEmailIds), includeJmapResponse, response),
+                json: withDebugData(summarizeThread(thread, emailMap, includeEmailIds), debugEnabled, response),
                 pairedItem: { item: i }
               })
             }
@@ -2522,7 +2539,7 @@ export class Fastmail implements INodeType {
 
             for (const thread of threads) {
               returnData.push({
-                json: withDebugData(summarizeThread(thread, emailMap, includeEmailIds), includeJmapResponse, response, { emailQueryResponse: queryResponse }),
+                json: withDebugData(summarizeThread(thread, emailMap, includeEmailIds), debugEnabled, response, { emailQueryResponse: queryResponse }),
                 pairedItem: { item: i }
               })
             }
@@ -2548,7 +2565,7 @@ export class Fastmail implements INodeType {
                   threadId,
                   requested: threadEmailIds.length,
                   successful: (result.destroyed ?? []).length
-                }, includeJmapResponse, response),
+                }, debugEnabled, response),
                 pairedItem: { item: i }
               })
               continue
@@ -2585,7 +2602,7 @@ export class Fastmail implements INodeType {
                 requested: threadEmailIds.length,
                 successful: updatedIds.length,
                 failed: 0
-              }, includeJmapResponse, response),
+              }, debugEnabled, response),
               pairedItem: { item: i }
             })
             continue
@@ -2710,7 +2727,7 @@ export class Fastmail implements INodeType {
                   draftId: createdId,
                   submitted: false,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, replyResponse),
+                }, debugEnabled, replyResponse),
                 pairedItem: { item: i }
               })
             } else {
@@ -2734,7 +2751,7 @@ export class Fastmail implements INodeType {
                   submitted: true,
                   draftCleanup,
                   uploadedAttachments: uploaded.uploadedAttachments
-                }, includeJmapResponse, replyResponse),
+                }, debugEnabled, replyResponse),
                 pairedItem: { item: i }
               })
             }
