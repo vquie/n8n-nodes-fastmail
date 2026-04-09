@@ -858,6 +858,36 @@ async function getEmailById (
   return methodResult<{ list?: EmailRecord[] }>(response, 'Email/get').list?.[0] ?? null
 }
 
+async function getEmailByIdWithResponse (
+  node: IExecuteFunctions,
+  token: string,
+  session: SessionResponse,
+  accountId: string,
+  emailId: string,
+  includeBodyValues = false,
+  includeAttachments = false
+): Promise<{ email: EmailRecord | null, response: JmapResponse }> {
+  const response = await callJmap(node, token, session, [JMAP_CORE, JMAP_MAIL], [
+    [
+      'Email/get',
+      {
+        accountId,
+        ids: [emailId],
+        properties: getEmailProperties(includeBodyValues, includeAttachments),
+        fetchTextBodyValues: includeBodyValues,
+        fetchHTMLBodyValues: includeBodyValues,
+        fetchAllBodyValues: includeBodyValues
+      },
+      'e1'
+    ]
+  ])
+
+  return {
+    email: methodResult<{ list?: EmailRecord[] }>(response, 'Email/get').list?.[0] ?? null,
+    response
+  }
+}
+
 async function getEmailsByIds (
   node: IExecuteFunctions,
   token: string,
@@ -1700,12 +1730,23 @@ export class Fastmail implements INodeType {
             const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
             const downloadAttachments = Boolean(fetchOptions.downloadAttachments ?? false)
             const attachmentBinaryPrefix = fetchOptions.attachmentBinaryPrefix ?? 'attachment_'
-            const email = await getEmailById(this, token, session, mailAccountId, messageId, includeBodyValues, downloadAttachments)
+            const { email, response } = await getEmailByIdWithResponse(
+              this,
+              token,
+              session,
+              mailAccountId,
+              messageId,
+              includeBodyValues,
+              downloadAttachments
+            )
             if (email == null) {
-              returnData.push({ json: { message: 'Message not found', messageId }, pairedItem: { item: i } })
+              returnData.push({
+                json: withDebugData({ message: 'Message not found', messageId }, debugEnabled, response),
+                pairedItem: { item: i }
+              })
             } else {
               const outputItem: INodeExecutionData = {
-                json: simplifyEmail(email, includeBodyValues),
+                json: withDebugData(simplifyEmail(email, includeBodyValues), debugEnabled, response),
                 pairedItem: { item: i }
               }
               if (downloadAttachments) {
@@ -2301,7 +2342,10 @@ export class Fastmail implements INodeType {
             ])
             const mailbox = methodResult<{ list?: MailboxRecord[] }>(response, 'Mailbox/get').list?.[0]
             if (mailbox == null) {
-              returnData.push({ json: { message: 'Label not found', labelId }, pairedItem: { item: i } })
+              returnData.push({
+                json: withDebugData({ message: 'Label not found', labelId }, debugEnabled, response),
+                pairedItem: { item: i }
+              })
             } else {
               const allMailboxes = await getMailboxes(this, token, session, mailAccountId)
               const mailboxPathMap = buildMailboxPathMap(allMailboxes)
@@ -2438,11 +2482,24 @@ export class Fastmail implements INodeType {
             validateFetchOptions(this, i, 'draft', 'get', fetchOptions)
             const draftId = this.getNodeParameter('draftId', i) as string
             const includeBodyValues = Boolean(fetchOptions.includeBodyValues ?? false)
-            const draft = await getEmailById(this, token, session, mailAccountId, draftId, includeBodyValues)
+            const { email: draft, response } = await getEmailByIdWithResponse(
+              this,
+              token,
+              session,
+              mailAccountId,
+              draftId,
+              includeBodyValues
+            )
             if (draft == null) {
-              returnData.push({ json: { message: 'Draft not found', draftId }, pairedItem: { item: i } })
+              returnData.push({
+                json: withDebugData({ message: 'Draft not found', draftId }, debugEnabled, response),
+                pairedItem: { item: i }
+              })
             } else {
-              returnData.push({ json: simplifyEmail(draft, includeBodyValues), pairedItem: { item: i } })
+              returnData.push({
+                json: withDebugData(simplifyEmail(draft, includeBodyValues), debugEnabled, response),
+                pairedItem: { item: i }
+              })
             }
             continue
           }
@@ -2497,7 +2554,10 @@ export class Fastmail implements INodeType {
             ])
             const thread = methodResult<{ list?: ThreadRecord[] }>(response, 'Thread/get').list?.[0]
             if (thread == null) {
-              returnData.push({ json: { message: 'Thread not found', threadId }, pairedItem: { item: i } })
+              returnData.push({
+                json: withDebugData({ message: 'Thread not found', threadId }, debugEnabled, response),
+                pairedItem: { item: i }
+              })
             } else {
               const emails = await getEmailsByIds(this, token, session, mailAccountId, thread.emailIds ?? [])
               const emailMap = new Map(emails.map((email) => [email.id, email]))
