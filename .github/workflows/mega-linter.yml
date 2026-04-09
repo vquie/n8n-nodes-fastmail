@@ -1,12 +1,12 @@
 ---
 name: MegaLinter
 
-on:
+'on':
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: megalinter-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: megalinter-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -74,5 +74,6 @@ jobs:
         if: steps.megalinter.outcome != 'success'
         shell: bash
         run: |
-          echo "MegaLinter found issues. See the workflow logs and PR annotations for details."
+          echo "MegaLinter found issues."
+          echo "See the workflow logs and PR annotations for details."
           exit 1

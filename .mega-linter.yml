@@ -4,8 +4,9 @@
 IGNORE_GITIGNORED_FILES: true
 YAML_YAMLLINT_CONFIG_FILE: .yamllint
 
-# Helm templates are Go templates, vendored CRDs should stay byte-close to upstream,
-# and Helm unittest/values files do not map cleanly to a JSON schema for v8r.
+# Helm templates are Go templates.
+# Vendored CRDs should stay byte-close to upstream.
+# Helm unittest and values files do not map cleanly to a JSON schema for v8r.
 
 DISABLE:
   - COPYPASTE

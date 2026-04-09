@@ -1,7 +1,7 @@
 ---
 name: Publish to npm
 
-on:
+'on':
   push:
     tags:
       - '*'
@@ -30,14 +30,16 @@ jobs:
       - name: Set package version from tag
         run: |
           TAG_VERSION="${GITHUB_REF_NAME}"
-          node -e "const fs=require('fs'); const pkg=require('./package.json'); pkg.version=process.argv[1]; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');" "$TAG_VERSION"
+          npm pkg set version="$TAG_VERSION"
 
       - name: Verify package version
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME}"
           if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "Package version ($PACKAGE_VERSION) does not match tag version ($TAG_VERSION)"
+            echo "Package version mismatch."
+            echo "package.json: $PACKAGE_VERSION"
+            echo "tag: $TAG_VERSION"
             exit 1
           fi
 
