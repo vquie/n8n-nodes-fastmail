@@ -56,10 +56,15 @@ interface EmailRecord {
   preview?: string
   messageId?: string[]
   inReplyTo?: string[]
-  textBody?: Array<{ partId?: string }>
-  htmlBody?: Array<{ partId?: string }>
+  textBody?: EmailBodyPart[]
+  htmlBody?: EmailBodyPart[]
   bodyValues?: Record<string, unknown>
   attachments?: EmailAttachmentPart[]
+}
+
+interface EmailBodyPart {
+  partId?: string
+  type?: string
 }
 
 interface EmailAttachmentPart {
@@ -225,9 +230,11 @@ function simplifyEmail (email: EmailRecord, includeBodyValues = false): JsonObje
 
   if (includeBodyValues) {
     const bodyValues = email.bodyValues ?? {}
-    const textBody = extractBodyValue(email.textBody, bodyValues)
+    const textBody = extractTextBodyValue(email, bodyValues)
     const htmlBody = extractBodyValue(email.htmlBody, bodyValues)
-    if (textBody != null) simplified.textBody = textBody
+    if (textBody != null) {
+      simplified.textBody = textBody
+    }
     if (htmlBody != null) simplified.htmlBody = htmlBody
   }
 
@@ -249,12 +256,22 @@ function simplifyEmail (email: EmailRecord, includeBodyValues = false): JsonObje
   return simplified
 }
 
+function extractTextBodyValue (email: EmailRecord, bodyValues: Record<string, unknown>): string | null {
+  const textBody = extractBodyValue(email.textBody, bodyValues)
+  if (textBody == null) {
+    return null
+  }
+
+  const htmlBody = extractBodyValue(email.htmlBody, bodyValues)
+  return isHtmlBodyDuplicate(email.textBody, email.htmlBody, textBody, htmlBody) ? null : textBody
+}
+
 function firstCreatedId (result: JmapSetResult): string | null {
   const first = Object.values(result.created ?? {})[0]
   return first?.id ?? null
 }
 
-function extractBodyValue (parts: Array<{ partId?: string }> | undefined, bodyValues: Record<string, unknown>): string | null {
+function extractBodyValue (parts: EmailBodyPart[] | undefined, bodyValues: Record<string, unknown>): string | null {
   if (parts == null || parts.length === 0) return null
   for (const part of parts) {
     const partId = part.partId
@@ -263,6 +280,34 @@ function extractBodyValue (parts: Array<{ partId?: string }> | undefined, bodyVa
     if (typeof value === 'string' && value !== '') return value
   }
   return null
+}
+
+function isHtmlBodyDuplicate (
+  textParts: EmailBodyPart[] | undefined,
+  htmlParts: EmailBodyPart[] | undefined,
+  textBody: string,
+  htmlBody: string | null
+): boolean {
+  if (htmlBody == null || textBody !== htmlBody) {
+    return false
+  }
+
+  const htmlPartIds = new Set(
+    (htmlParts ?? [])
+      .map((part) => part.partId)
+      .filter((partId): partId is string => partId != null && partId !== '')
+  )
+
+  const sharesHtmlPart = (textParts ?? []).some((part) => {
+    const partId = part.partId
+    return partId != null && partId !== '' && htmlPartIds.has(partId)
+  })
+
+  if (sharesHtmlPart) {
+    return true
+  }
+
+  return (textParts ?? []).some((part) => part.type?.toLowerCase().startsWith('text/html') === true)
 }
 
 function getEmailProperties (includeBodyValues: boolean, includeAttachments = false): string[] {
@@ -338,7 +383,7 @@ function prefixSubject (subject: string | undefined, prefix: string): string {
 
 function buildForwardedTextBody (original: EmailRecord): string {
   const bodyValues = original.bodyValues ?? {}
-  const originalText = extractBodyValue(original.textBody, bodyValues) ?? original.preview ?? ''
+  const originalText = extractTextBodyValue(original, bodyValues) ?? original.preview ?? ''
   const lines = [
     '---------- Forwarded message ----------',
     `From: ${formatAddressList(original.from).join(', ')}`,
