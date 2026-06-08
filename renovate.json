@@ -1,8 +1,21 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": [
+    "config:recommended",
+    "config:best-practices",
+    "schedule:weekdays",
+    ":noUnscheduledUpdates",
+    "mergeConfidence:all-badges"
+  ],
+  "addLabels": ["{{updateType}}"],
   "semanticCommits": "enabled",
-  "ignorePresets": ["docker:pinDigests", ":pinDevDependencies"],
+  "separateMajorMinor": true,
+  "separateMinorPatch": true,
+  "vulnerabilityAlerts": {
+    "addLabels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "dependencyDashboardOSVVulnerabilitySummary": "all",
   "packageRules": [
     {
       "extends": ["packages:linters"],
