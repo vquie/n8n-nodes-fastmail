@@ -51,6 +51,8 @@ type TriggerEventType = 'newEmail' | 'deletedEmail' | 'read' | 'unread' | 'updat
 const JMAP_CORE = 'urn:ietf:params:jmap:core'
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail'
 const MAX_SSE_BUFFER = 2 * 1024 * 1024
+const EMAIL_GET_BATCH_SIZE = 100
+const EMAIL_CHANGES_BATCH_SIZE = 200
 const ENABLE_FASTMAIL_OAUTH = false
 const DEFAULT_FASTMAIL_AUTH_MODE = 'apiToken' as const
 
@@ -204,6 +206,16 @@ function buildMailboxPathMap (mailboxes: MailboxRecord[]): Map<string, string> {
 function omitKey<T> (record: Record<string, T>, key: string): Record<string, T> {
   const { [key]: _removed, ...rest } = record
   return rest
+}
+
+function chunkArray<T> (values: T[], size: number): T[][] {
+  if (size <= 0) return [values]
+
+  const chunks: T[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size))
+  }
+  return chunks
 }
 
 async function getMailboxes (
@@ -478,18 +490,24 @@ export class FastmailTrigger implements INodeType {
 
     const getEmailsByIds = async (session: SessionResponse, accountId: string, ids: string[]): Promise<EmailRecord[]> => {
       if (ids.length === 0) return []
-      const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-        [
-          'Email/get',
-          {
-            accountId,
-            ids,
-            properties: ['id', 'threadId', 'mailboxIds', 'from', 'to', 'subject', 'receivedAt', 'keywords', 'preview']
-          },
-          'e1'
-        ]
-      ])
-      return methodResult<{ list?: EmailRecord[] }>(response, 'Email/get').list ?? []
+      const emails: EmailRecord[] = []
+
+      for (const idBatch of chunkArray(ids, EMAIL_GET_BATCH_SIZE)) {
+        const response = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
+          [
+            'Email/get',
+            {
+              accountId,
+              ids: idBatch,
+              properties: ['id', 'threadId', 'mailboxIds', 'from', 'to', 'subject', 'receivedAt', 'keywords', 'preview']
+            },
+            'e1'
+          ]
+        ])
+        emails.push(...(methodResult<{ list?: EmailRecord[] }>(response, 'Email/get').list ?? []))
+      }
+
+      return emails
     }
 
     const getEmailState = async (session: SessionResponse, accountId: string): Promise<string> => {
@@ -547,90 +565,132 @@ export class FastmailTrigger implements INodeType {
       }
 
       const addedIds = (changes.added ?? []).map((entry) => entry.id).filter(Boolean)
+      const removedIds = (changes.removed ?? []).filter(Boolean)
+      const removedIdSet = new Set(removedIds)
       if (addedIds.length > 0) {
         const emails = await getEmailsByIds(session, accountId, addedIds)
         for (const email of emails) {
+          if (filterLabelId !== '' && selectedEvents.has('newEmail')) {
+            emitEmailEvent('newEmail', email, 'change')
+          }
           seenMap[email.id] = Boolean(email.keywords?.$seen)
           mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
         }
       }
 
-      staticData.lastQueryState = changes.newQueryState
-
-      if (previousEmailState !== '') {
-        const emailChangesResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
-          ['Email/changes', { accountId, sinceState: previousEmailState }, 'ec1']
-        ])
-
-        const emailChanges = methodResult<{
-          created?: string[]
-          updated?: string[]
-          destroyed?: string[]
-          newState?: string
-          hasMoreChanges?: boolean
-        }>(emailChangesResponse, 'Email/changes')
-
-        if (emailChanges.newState != null) {
-          staticData.lastEmailState = emailChanges.newState
-        }
-
-        for (const destroyedId of (emailChanges.destroyed ?? [])) {
-          seenMap = omitKey(seenMap, destroyedId)
-          mailboxMap = omitKey(mailboxMap, destroyedId)
+      if (filterLabelId !== '' && removedIds.length > 0) {
+        for (const removedId of removedIds) {
+          seenMap = omitKey(seenMap, removedId)
+          mailboxMap = omitKey(mailboxMap, removedId)
           staticData.seenByMessageId = seenMap
           staticData.mailboxIdsByMessageId = mailboxMap
-          emitDeletedEvent(destroyedId)
+          emitDeletedEvent(removedId)
         }
+      }
 
-        const createdIds = [...new Set(emailChanges.created ?? [])]
-        const updatedIds = [...new Set(emailChanges.updated ?? [])]
-        const changedIds = [...new Set([...createdIds, ...updatedIds])]
-        if (changedIds.length > 0) {
-          const emails = await getEmailsByIds(session, accountId, changedIds)
-          const emailById = new Map(emails.map((email) => [email.id, email]))
+      staticData.lastQueryState = changes.newQueryState
 
-          for (const createdId of createdIds) {
-            const email = emailById.get(createdId)
-            if (email == null) continue
-            if (filterLabelId !== '' && email.mailboxIds?.[filterLabelId] !== true) continue
+      const needsEmailChangesSync = filterLabelId === ''
+        || selectedEvents.has('read')
+        || selectedEvents.has('unread')
+        || selectedEvents.has('updated')
 
-            emitEmailEvent('newEmail', email, 'change')
-            seenMap[email.id] = Boolean(email.keywords?.$seen)
-            mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
+      if (!needsEmailChangesSync) {
+        if (previousEmailState === '') {
+          staticData.lastEmailState = await getEmailState(session, accountId)
+        }
+        return
+      }
+
+      if (previousEmailState !== '') {
+        let emailStateCursor = previousEmailState
+        let hasMoreEmailChanges = true
+
+        while (hasMoreEmailChanges) {
+          const emailChangesResponse = await callJmap(this, token, session, [JMAP_CORE, JMAP_MAIL], [
+            ['Email/changes', { accountId, sinceState: emailStateCursor, maxChanges: EMAIL_CHANGES_BATCH_SIZE }, 'ec1']
+          ])
+
+          const emailChanges = methodResult<{
+            created?: string[]
+            updated?: string[]
+            destroyed?: string[]
+            newState?: string
+            hasMoreChanges?: boolean
+          }>(emailChangesResponse, 'Email/changes')
+
+          if (emailChanges.newState == null) {
+            break
           }
 
-          for (const updatedId of updatedIds) {
-            const email = emailById.get(updatedId)
-            if (email == null) continue
-            const previousMailboxIds = mailboxMap[email.id] ?? []
-            const currentMailboxIds = Object.keys(email.mailboxIds ?? {})
-            const wasInFilterMailbox = filterLabelId !== '' && previousMailboxIds.includes(filterLabelId)
-            const isInFilterMailbox = filterLabelId === '' || email.mailboxIds?.[filterLabelId] === true
+          emailStateCursor = emailChanges.newState
+          staticData.lastEmailState = emailStateCursor
 
-            const hadTrashMailbox = previousMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
-            const hasTrashMailbox = currentMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
-            const movedToTrash = !hadTrashMailbox && hasTrashMailbox
+          for (const destroyedId of (emailChanges.destroyed ?? [])) {
+            const wasInFilterMailbox = filterLabelId === '' || (mailboxMap[destroyedId] ?? []).includes(filterLabelId)
+            seenMap = omitKey(seenMap, destroyedId)
+            mailboxMap = omitKey(mailboxMap, destroyedId)
+            staticData.seenByMessageId = seenMap
+            staticData.mailboxIdsByMessageId = mailboxMap
+            if (wasInFilterMailbox) {
+              emitDeletedEvent(destroyedId)
+            }
+          }
 
-            if (movedToTrash || (filterLabelId !== '' && wasInFilterMailbox && !isInFilterMailbox)) {
-              emitDeletedEvent(email.id)
+          const createdIds = [...new Set(emailChanges.created ?? [])]
+          const updatedIds = [...new Set(emailChanges.updated ?? [])]
+          const changedIds = [...new Set([...createdIds, ...updatedIds])]
+          if (changedIds.length > 0) {
+            const emails = await getEmailsByIds(session, accountId, changedIds)
+            const emailById = new Map(emails.map((email) => [email.id, email]))
+
+            for (const createdId of createdIds) {
+              const email = emailById.get(createdId)
+              if (email == null) continue
+              if (filterLabelId !== '' && email.mailboxIds?.[filterLabelId] !== true) continue
+
+              if (filterLabelId === '') {
+                emitEmailEvent('newEmail', email, 'change')
+              }
               seenMap[email.id] = Boolean(email.keywords?.$seen)
+              mailboxMap[email.id] = Object.keys(email.mailboxIds ?? {})
+            }
+
+            for (const updatedId of updatedIds) {
+              const email = emailById.get(updatedId)
+              if (email == null) continue
+              const previousMailboxIds = mailboxMap[email.id] ?? []
+              const currentMailboxIds = Object.keys(email.mailboxIds ?? {})
+              const wasInFilterMailbox = filterLabelId !== '' && previousMailboxIds.includes(filterLabelId)
+              const isInFilterMailbox = filterLabelId === '' || email.mailboxIds?.[filterLabelId] === true
+
+              const hadTrashMailbox = previousMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
+              const hasTrashMailbox = currentMailboxIds.some((mailboxId) => mailboxRoleById[mailboxId] === 'trash')
+              const movedToTrash = !hadTrashMailbox && hasTrashMailbox
+
+              if ((movedToTrash || (filterLabelId !== '' && wasInFilterMailbox && !isInFilterMailbox)) && !removedIdSet.has(email.id)) {
+                emitDeletedEvent(email.id)
+                seenMap[email.id] = Boolean(email.keywords?.$seen)
+                mailboxMap[email.id] = currentMailboxIds
+                continue
+              }
+
+              if (!isInFilterMailbox) continue
+
+              const currentSeen = Boolean(email.keywords?.$seen)
+              const previousSeen = seenMap[email.id]
+              if (previousSeen !== undefined && previousSeen !== currentSeen) {
+                emitEmailEvent(currentSeen ? 'read' : 'unread', email, 'change')
+              } else if (selectedEvents.has('updated')) {
+                emitEmailEvent('updated', email, 'change')
+              }
+
+              seenMap[email.id] = currentSeen
               mailboxMap[email.id] = currentMailboxIds
-              continue
             }
-
-            if (!isInFilterMailbox) continue
-
-            const currentSeen = Boolean(email.keywords?.$seen)
-            const previousSeen = seenMap[email.id]
-            if (previousSeen !== undefined && previousSeen !== currentSeen) {
-              emitEmailEvent(currentSeen ? 'read' : 'unread', email, 'change')
-            } else if (selectedEvents.has('updated')) {
-              emitEmailEvent('updated', email, 'change')
-            }
-
-            seenMap[email.id] = currentSeen
-            mailboxMap[email.id] = currentMailboxIds
           }
+
+          hasMoreEmailChanges = emailChanges.hasMoreChanges === true
         }
       } else {
         staticData.lastEmailState = await getEmailState(session, accountId)
