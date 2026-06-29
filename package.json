@@ -46,7 +46,7 @@
     "gulp": "5.0.1",
     "gulp-cli": "3.1.0",
     "n8n-workflow": "2.16.0",
-    "prettier": "3.8.4",
+    "prettier": "3.8.5",
     "typescript": "5.9.3"
   }
 }
