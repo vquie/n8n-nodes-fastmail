@@ -40,13 +40,13 @@
   },
   "devDependencies": {
     "@types/node": "25.9.2",
-    "@typescript-eslint/parser": "8.61.1",
-    "eslint": "10.4.1",
+    "@typescript-eslint/parser": "8.62.1",
+    "eslint": "10.6.0",
     "eslint-plugin-n8n-nodes-base": "1.16.7",
     "gulp": "5.0.1",
     "gulp-cli": "3.1.0",
     "n8n-workflow": "2.16.0",
-    "prettier": "3.8.4",
+    "prettier": "3.9.3",
     "typescript": "5.9.3"
   }
 }
