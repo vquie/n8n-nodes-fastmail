@@ -41,7 +41,7 @@
   "devDependencies": {
     "@types/node": "25.9.5",
     "@typescript-eslint/parser": "8.65.0",
-    "eslint": "10.8.0",
+    "eslint": "10.8.1",
     "eslint-plugin-n8n-nodes-base": "1.16.7",
     "gulp": "5.0.1",
     "gulp-cli": "3.1.0",
