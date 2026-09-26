@@ -16,6 +16,15 @@
   },
   "osvVulnerabilityAlerts": true,
   "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/mega-linter\\.yml$/"],
+      "matchStrings": ["ML_VERSION:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "oxsecurity/megalinter-cupcake",
+      "datasourceTemplate": "docker"
+    }
+  ],
   "lockFileMaintenance": {
     "automerge": true
   },
