@@ -16,10 +16,36 @@
   },
   "osvVulnerabilityAlerts": true,
   "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "lockFileMaintenance": {
+    "automerge": true
+  },
   "packageRules": [
     {
       "extends": ["packages:linters"],
       "groupName": "linters"
+    },
+    {
+      "description": "Auto-merge low-risk patch, pin, and digest updates after CI",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "minimumReleaseAge": "3 days",
+      "internalChecksFilter": "strict",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Auto-merge minor updates after a longer stability window",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "7 days",
+      "internalChecksFilter": "strict",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Never auto-merge major updates",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ]
 }
